@@ -10,7 +10,7 @@ from get_evaluation import get_evaluation
 from src.dataset import ActivityNetDataset, AudioSetZSLDataset, ContrastiveDataset, VGGSoundDataset, UCFDataset
 from src.dataset import DefaultCollator
 from src.metrics import DetailedLosses, MeanClassAccuracy, PercentOverlappingClasses, TargetDifficulty
-from src.clipclap_model import build_clipclap_model
+from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint
 from src.sampler import SamplerFactory
 from src.train import train
 from src.loss import L2Loss
@@ -245,6 +245,17 @@ def main(args):
         raise AttributeError("No correct model name.")
     print_model_size(model, logger)
     model.to(args.device)
+
+    if getattr(args, "model_backend", "ann") == "snn" and getattr(args, "snn_init_ann_path", None):
+        init_snn_clipclap_from_ann_checkpoint(
+            model,
+            args.snn_init_ann_path,
+            args.device,
+            model_params,
+            args.input_size_audio,
+            args.input_size_video,
+        )
+        logger.info("SNN Linear layers initialized from ANN checkpoint: %s", args.snn_init_ann_path)
 
     distance_fn = getattr(sys.modules[__name__], args.distance_fn)()
     metrics = [

@@ -428,6 +428,12 @@ def args_main(*args, **kwargs):
         type=float,
         default=1.0,
     )
+    model_group.add_argument(
+        "--snn_init_ann_path",
+        help="Optional path to ANN checkpoint .pt (same ClipClap_model layout) to initialize SNN Linear weights via BN-fused copy; LIF params stay default",
+        type=pathlib.Path,
+        default=None,
+    )
 
     model_group.add_argument(
         "--perceiver",

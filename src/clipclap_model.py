@@ -147,6 +147,107 @@ class SNN_EmbeddingNet(nn.Module):
         return self.forward(x)
 
 
+def _fuse_linear_bn1d(linear: nn.Linear, bn: nn.BatchNorm1d):
+    """Fold BatchNorm1d into preceding Linear (use running stats, eval-style)."""
+    gamma = bn.weight
+    beta = bn.bias
+    mean = bn.running_mean
+    var = bn.running_var
+    eps = bn.eps
+    std = torch.sqrt(var + eps)
+    w = linear.weight * (gamma / std).unsqueeze(1)
+    b = gamma * (linear.bias - mean) / std + beta
+    return w.detach(), b.detach()
+
+
+def _extract_fused_linear_weights_from_embedding_net(emb: EmbeddingNet):
+    """Return list of (weight, bias) for each Linear in order, with BN fused when present."""
+    mods = list(emb.fc.children())
+    out = []
+    n = len(mods)
+    i = 0
+    while i < n:
+        if isinstance(mods[i], nn.Linear):
+            if i + 1 < n and isinstance(mods[i + 1], nn.BatchNorm1d):
+                w, b = _fuse_linear_bn1d(mods[i], mods[i + 1])
+                out.append((w, b))
+                i += 2
+            else:
+                lin = mods[i]
+                out.append((lin.weight.data.clone(), lin.bias.data.clone()))
+                i += 1
+        else:
+            i += 1
+    return out
+
+
+def copy_ann_embedding_net_to_snn(ann_emb: EmbeddingNet, snn_emb: "SNN_EmbeddingNet"):
+    """Copy fused Linear weights from a trained EmbeddingNet into SNN_EmbeddingNet (LIF params unchanged)."""
+    fused = _extract_fused_linear_weights_from_embedding_net(ann_emb)
+    if snn_emb.hidden_size and snn_emb.hidden_size > 0:
+        if len(fused) != 2:
+            raise ValueError(
+                f"Expected 2 fused Linear layers in ANN, got {len(fused)}"
+            )
+        snn_emb.lin1.weight.data.copy_(fused[0][0])
+        snn_emb.lin1.bias.data.copy_(fused[0][1])
+        snn_emb.lin2.weight.data.copy_(fused[1][0])
+        snn_emb.lin2.bias.data.copy_(fused[1][1])
+    else:
+        if len(fused) != 1:
+            raise ValueError(
+                f"Expected 1 fused Linear layer in ANN, got {len(fused)}"
+            )
+        snn_emb.lin1.weight.data.copy_(fused[0][0])
+        snn_emb.lin1.bias.data.copy_(fused[0][1])
+
+
+def init_snn_clipclap_from_ann_checkpoint(
+    snn_model: "ClipClap_model",
+    checkpoint_path,
+    device,
+    model_params: dict,
+    input_size_audio,
+    input_size_video,
+):
+    """
+    Load an ANN checkpoint, then copy each EmbeddingNet's fused Linear weights
+    into the corresponding SNN_EmbeddingNet. LIF (beta/threshold) stays as in SNN init.
+    """
+    path = checkpoint_path
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"snn_init_ann_path not found: {path}")
+
+    ann_params = dict(model_params)
+    ann_params["model_backend"] = "ann"
+    ann_params["snn_embedding_kwargs"] = {}
+    ann_model = ClipClap_model(ann_params, input_size_audio, input_size_video)
+
+    ckpt = torch.load(path, map_location=device)
+    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    new_state = {}
+    for k, v in state.items():
+        nk = k.replace("module.", "", 1) if k.startswith("module.") else k
+        new_state[nk] = v
+    missing, unexpected = ann_model.load_state_dict(new_state, strict=False)
+    if missing:
+        print(f"init_snn_from_ann: missing keys ({len(missing)}): {missing[:12]}")
+    if unexpected:
+        print(f"init_snn_from_ann: unexpected keys ({len(unexpected)}): {unexpected[:12]}")
+
+    for name in ("O_enc", "W_enc", "O_proj", "D_o", "W_proj", "D_w"):
+        ann_m = getattr(ann_model, name)
+        snn_m = getattr(snn_model, name)
+        if not isinstance(ann_m, EmbeddingNet) or not isinstance(snn_m, SNN_EmbeddingNet):
+            raise TypeError(f"{name}: expected ANN EmbeddingNet and SNN_EmbeddingNet")
+        copy_ann_embedding_net_to_snn(ann_m, snn_m)
+
+    del ann_model
+    if torch.cuda.is_available() and "cuda" in str(device):
+        torch.cuda.empty_cache()
+    print("init_snn_from_ann: copied fused Linear weights from ANN checkpoint into SNN modules.")
+
+
 
 
 
