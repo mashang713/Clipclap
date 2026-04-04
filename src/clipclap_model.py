@@ -15,6 +15,13 @@ import torch.nn.functional as F
 # user defined
 from src.optimizer import SAM
 
+try:
+    import snntorch as snn
+    from snntorch import surrogate as snn_surrogate
+except ImportError:  # optional until user runs: pip install snntorch
+    snn = None
+    snn_surrogate = None
+
 torch.set_printoptions(threshold=10_000)
 def disable_running_stats(model):
     def _disable(module):
@@ -61,6 +68,80 @@ class EmbeddingNet(nn.Module):
     def forward(self, x):
         output = self.fc(x)
         return output
+
+    def get_embedding(self, x):
+        return self.forward(x)
+
+
+class SNN_EmbeddingNet(nn.Module):
+    """
+    Leaky integrate-and-fire stack with the same constructor shape as EmbeddingNet.
+    ``use_bn`` is ignored (no BatchNorm; use floating-point affine layers only).
+    Output is the time-averaged spike rate (same shape as EmbeddingNet output).
+    """
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        dropout,
+        use_bn,
+        hidden_size=-1,
+        num_steps=10,
+        beta=0.9,
+        threshold=1.0,
+    ):
+        super().__init__()
+        if snn is None or snn_surrogate is None:
+            raise ImportError(
+                "SNN backend requires snntorch. Install with: pip install snntorch"
+            )
+        self.num_steps = int(num_steps)
+        self.hidden_size = hidden_size
+        spike_grad = snn_surrogate.fast_sigmoid()
+        self.lif_kwargs = dict(beta=beta, threshold=threshold, spike_grad=spike_grad)
+
+        if hidden_size > 0:
+            self.lin1 = nn.Linear(input_size, hidden_size)
+            self.lif1 = snn.Leaky(**self.lif_kwargs)
+            self.dropout1 = nn.Dropout(dropout)
+            self.lin2 = nn.Linear(hidden_size, output_size)
+            self.lif2 = snn.Leaky(**self.lif_kwargs)
+            self.dropout2 = nn.Dropout(dropout)
+        else:
+            self.lin1 = nn.Linear(input_size, output_size)
+            self.lif1 = snn.Leaky(**self.lif_kwargs)
+            self.dropout1 = nn.Dropout(dropout)
+
+    def forward(self, x):
+        if self.hidden_size > 0:
+            return self._forward_two_layer(x)
+        return self._forward_one_layer(x)
+
+    def _forward_one_layer(self, x):
+        mem = torch.zeros_like(self.lin1(x))
+        spike_sum = torch.zeros_like(mem)
+        for _ in range(self.num_steps):
+            cur = self.lin1(x)
+            spk, mem = self.lif1(cur, mem)
+            spk = self.dropout1(spk)
+            spike_sum = spike_sum + spk
+        return spike_sum / self.num_steps
+
+    def _forward_two_layer(self, x):
+        mem1 = torch.zeros_like(self.lin1(x))
+        z = torch.zeros(x.size(0), self.hidden_size, device=x.device, dtype=x.dtype)
+        mem2 = torch.zeros_like(self.lin2(z))
+        spike_sum = torch.zeros_like(mem2)
+        for _ in range(self.num_steps):
+            cur1 = self.lin1(x)
+            spk1, mem1 = self.lif1(cur1, mem1)
+            spk1 = self.dropout1(spk1)
+            cur2 = self.lin2(spk1)
+            spk2, mem2 = self.lif2(cur2, mem2)
+            spk2 = self.dropout2(spk2)
+            spike_sum = spike_sum + spk2
+        return spike_sum / self.num_steps
 
     def get_embedding(self, x):
         return self.forward(x)
@@ -138,38 +219,47 @@ class ClipClap_model(nn.Module):
         self.modality = params_model['modality']
         self.word_embeddings = params_model['word_embeddings']
 
+        self._use_snn = params_model.get("model_backend") == "snn"
+        Emb = SNN_EmbeddingNet if self._use_snn else EmbeddingNet
+        emb_kw = params_model.get("snn_embedding_kwargs") or {}
+
         if self.modality == 'audio':
-            self.O_enc = EmbeddingNet(
+            self.O_enc = Emb(
                 input_size=1024,
                 output_size=512,
                 dropout=0.1,
-                use_bn=True
+                use_bn=True,
+                **emb_kw,
             )
-            self.W_enc = EmbeddingNet(
+            self.W_enc = Emb(
                 input_size=1024,
                 output_size=512,
                 dropout=0.1,
-                use_bn=True
+                use_bn=True,
+                **emb_kw,
             )
         elif self.modality == 'video':
-            self.O_enc = EmbeddingNet(
+            self.O_enc = Emb(
                 input_size=512,
                 output_size=512,
                 dropout=0.1,
-                use_bn=True
+                use_bn=True,
+                **emb_kw,
             )
-            self.W_enc = EmbeddingNet(
+            self.W_enc = Emb(
                 input_size=512,
                 output_size=512,
                 dropout=0.1,
-                use_bn=True
+                use_bn=True,
+                **emb_kw,
             )
         else:
-            self.O_enc = EmbeddingNet(
+            self.O_enc = Emb(
                 input_size=1536,
                 output_size=512,
                 dropout=0.1,
-                use_bn=True
+                use_bn=True,
+                **emb_kw,
             )
             w_in_dim = 1536
             if self.word_embeddings == 'wavcaps':
@@ -177,45 +267,50 @@ class ClipClap_model(nn.Module):
             elif self.word_embeddings == 'clip':
                 w_in_dim = 512
 
-            self.W_enc = EmbeddingNet(
+            self.W_enc = Emb(
                 input_size=w_in_dim,
                 output_size=512,
                 dropout=0.1,
-                use_bn=True
+                use_bn=True,
+                **emb_kw,
             )
 
 
 
 
         word_embedding_dim = 512
-        self.O_proj = EmbeddingNet(
+        self.O_proj = Emb(
             input_size=512,
             hidden_size=self.hidden_size_decoder,
             output_size=self.dim_out,
             dropout=self.drop_proj_o,
-            use_bn=params_model['embeddings_batch_norm']
+            use_bn=params_model['embeddings_batch_norm'],
+            **emb_kw,
         )
-        self.D_o = EmbeddingNet(
+        self.D_o = Emb(
             input_size=self.dim_out,
             hidden_size=self.hidden_size_decoder,
             output_size=word_embedding_dim,
             dropout=self.drop_proj_o,
-            use_bn=params_model['embeddings_batch_norm']
+            use_bn=params_model['embeddings_batch_norm'],
+            **emb_kw,
         )
 
 
-        self.W_proj= EmbeddingNet(
+        self.W_proj= Emb(
             input_size=word_embedding_dim,
             output_size=self.dim_out,
             dropout=self.drop_proj_w,
-            use_bn=params_model['embeddings_batch_norm']
+            use_bn=params_model['embeddings_batch_norm'],
+            **emb_kw,
         )
 
-        self.D_w = EmbeddingNet(
+        self.D_w = Emb(
             input_size=self.dim_out,
             output_size=word_embedding_dim,
             dropout=self.drop_proj_w,
-            use_bn=params_model['embeddings_batch_norm']
+            use_bn=params_model['embeddings_batch_norm'],
+            **emb_kw,
         )
 
 
@@ -441,3 +536,10 @@ class ClipClap_model(nn.Module):
         theta_w=self.W_proj(w)
 
         return theta_o, theta_o, theta_w
+
+
+def build_clipclap_model(model_params, input_size_audio, input_size_video):
+    backend = model_params.get("model_backend", "ann")
+    if backend not in ("ann", "snn"):
+        raise ValueError(f"Unknown model_backend: {backend!r}, expected 'ann' or 'snn'.")
+    return ClipClap_model(model_params, input_size_audio, input_size_video)

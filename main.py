@@ -10,7 +10,7 @@ from get_evaluation import get_evaluation
 from src.dataset import ActivityNetDataset, AudioSetZSLDataset, ContrastiveDataset, VGGSoundDataset, UCFDataset
 from src.dataset import DefaultCollator
 from src.metrics import DetailedLosses, MeanClassAccuracy, PercentOverlappingClasses, TargetDifficulty
-from src.clipclap_model import ClipClap_model
+from src.clipclap_model import build_clipclap_model
 from src.sampler import SamplerFactory
 from src.train import train
 from src.loss import L2Loss
@@ -231,10 +231,14 @@ def main(args):
         args.transformer_embedding_time_embed_type, args.transformer_embedding_fourier_scale, args.transformer_embedding_embed_augment_position,
         args.lr_scheduler, args.optimizer, args.use_self_attention, args.use_cross_attention, args.transformer_average_features,
         args.audio_only, args.video_only, args.transformer_use_class_token, args.transformer_embedding_modality,
-        args.modality, args.word_embeddings
+        args.modality, args.word_embeddings,
+        getattr(args, "model_backend", "ann"),
+        getattr(args, "snn_num_steps", 10),
+        getattr(args, "snn_beta", 0.9),
+        getattr(args, "snn_threshold", 1.0),
     )
     if args.new_model_sequence==True:
-        model = ClipClap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)
+        model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)
 
 
     else:

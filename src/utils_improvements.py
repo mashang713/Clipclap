@@ -51,7 +51,11 @@ def get_model_params(
     transformer_use_class_token,
     transformer_embedding_modality,
     modality,
-    word_embeddings
+    word_embeddings,
+    model_backend="ann",
+    snn_num_steps=10,
+    snn_beta=0.9,
+    snn_threshold=1.0,
     ):
 
     params_model = dict()
@@ -105,4 +109,13 @@ def get_model_params(
 
     params_model['modality'] = modality
     params_model['word_embeddings'] = word_embeddings
+    params_model['model_backend'] = model_backend
+    if model_backend == "snn":
+        params_model["snn_embedding_kwargs"] = {
+            "num_steps": snn_num_steps,
+            "beta": snn_beta,
+            "threshold": snn_threshold,
+        }
+    else:
+        params_model["snn_embedding_kwargs"] = {}
     return params_model

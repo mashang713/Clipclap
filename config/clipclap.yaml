@@ -39,6 +39,11 @@ new_model_sequence: true
 eval_name: Attention
 
 # model
+# ann: Linear+BN+ReLU; snn: snntorch Leaky LIF stacks (no BN in SNN blocks)
+model_backend: ann
+snn_num_steps: 10
+snn_beta: 0.9
+snn_threshold: 1.0
 decoder_dropout: 0.1 # dropout for output embedding layers O_proj and D_o
 decoder_hidden_size: 512 # hidden size of O_proj and D_o
 additional_dropout: 0.1  # dropout for word label embedding layers W_proj and D_w

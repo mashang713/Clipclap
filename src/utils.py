@@ -80,8 +80,8 @@ def log_hparams(writer, args, metrics):
             args_dict[k] = v.as_posix()
     del metrics["recall"]
     metrics = {"Eval/"+k: v for k,v in metrics.items()}
-    del args_dict['audio_hip_blocks']
-    del args_dict['video_hip_blocks']
+    args_dict.pop('audio_hip_blocks', None)
+    args_dict.pop('video_hip_blocks', None)
 
     writer.add_hparams(args_dict, metrics)
 

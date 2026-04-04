@@ -56,6 +56,10 @@ new_model_middle_fusion: False
 new_model_attention: False
 new_model_attention_both_heads: False
 new_model_sequence: False
+model_backend: ann
+snn_num_steps: 10
+snn_beta: 0.9
+snn_threshold: 1.0
 perceiver: false
 attention_fusion: false
 ale: False

@@ -1,0 +1,2 @@
+# Optional: only needed when model_backend is snn
+snntorch>=0.7.0

@@ -333,7 +333,7 @@ def args_main(*args, **kwargs):
     parser.add_argument(
         "--device",
         help="Device to run on.",
-        choices=["cuda", "cpu", "cuda:1", "cuda:2", "cuda:3", "cuda:4", "cuda:5", "cuda:6", "cuda:7"],
+        choices=["cuda", "cpu", "cuda:0", "cuda:1", "cuda:2", "cuda:3", "cuda:4", "cuda:5", "cuda:6", "cuda:7"],
     )
 
     model_group = parser.add_argument_group('model')
@@ -401,6 +401,32 @@ def args_main(*args, **kwargs):
         "--new_model_sequence",
         help="Flag to use multimodal Transformer on sequences",
         type=str_to_bool, nargs='?', const=True
+    )
+
+    model_group.add_argument(
+        "--model_backend",
+        help="Train/infer with ANN MLPs (ann) or leaky-IF SNN embedding nets (snn; requires snntorch)",
+        choices=["ann", "snn"],
+        default="ann",
+        type=str,
+    )
+    model_group.add_argument(
+        "--snn_num_steps",
+        help="SNN simulation time steps (rate coding window) for SNN_EmbeddingNet",
+        type=int,
+        default=10,
+    )
+    model_group.add_argument(
+        "--snn_beta",
+        help="Leak factor beta for snntorch.Leaky in SNN_EmbeddingNet",
+        type=float,
+        default=0.9,
+    )
+    model_group.add_argument(
+        "--snn_threshold",
+        help="Firing threshold for snntorch.Leaky in SNN_EmbeddingNet",
+        type=float,
+        default=1.0,
     )
 
     model_group.add_argument(
