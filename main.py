@@ -60,6 +60,7 @@ def run():
 
 def main(args):
     # args, eval_args = args_main()
+    best_epoch = None
 
     if args.input_size is not None:
         args.input_size_audio = args.input_size
