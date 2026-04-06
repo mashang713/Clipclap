@@ -44,6 +44,11 @@ model_backend: ann
 snn_num_steps: 10
 snn_beta: 0.9
 snn_threshold: 1.0
+snn_use_oat: false
+snn_threshold_normal: 1.5
+snn_threshold_outlier: 2.5
+snn_outlier_percentile: 0.95
+# snn_outlier_boundary: null
 # Optional: path to ANN .pt (e.g. .../ClipClap_model_score_ckpt_14.pt) to copy fused Linear weights into SNN; leave unset for random init
 # snn_init_ann_path: null
 decoder_dropout: 0.1 # dropout for output embedding layers O_proj and D_o

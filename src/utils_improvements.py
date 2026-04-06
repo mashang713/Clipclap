@@ -56,6 +56,11 @@ def get_model_params(
     snn_num_steps=10,
     snn_beta=0.9,
     snn_threshold=1.0,
+    snn_use_oat=False,
+    snn_threshold_normal=1.5,
+    snn_threshold_outlier=2.5,
+    snn_outlier_percentile=0.95,
+    snn_outlier_boundary=None,
     ):
 
     params_model = dict()
@@ -115,6 +120,11 @@ def get_model_params(
             "num_steps": snn_num_steps,
             "beta": snn_beta,
             "threshold": snn_threshold,
+            "use_oat": snn_use_oat,
+            "threshold_normal": snn_threshold_normal,
+            "threshold_outlier": snn_threshold_outlier,
+            "outlier_percentile": snn_outlier_percentile,
+            "outlier_boundary": snn_outlier_boundary,
         }
     else:
         params_model["snn_embedding_kwargs"] = {}

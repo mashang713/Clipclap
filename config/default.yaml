@@ -60,6 +60,10 @@ model_backend: ann
 snn_num_steps: 10
 snn_beta: 0.9
 snn_threshold: 1.0
+snn_use_oat: false
+snn_threshold_normal: 1.5
+snn_threshold_outlier: 2.5
+snn_outlier_percentile: 0.95
 perceiver: false
 attention_fusion: false
 ale: False

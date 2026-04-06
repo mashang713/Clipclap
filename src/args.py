@@ -434,6 +434,38 @@ def args_main(*args, **kwargs):
         type=pathlib.Path,
         default=None,
     )
+    model_group.add_argument(
+        "--snn_use_oat",
+        help="Outlier-Aware dual-threshold Leaky IF in SNN_EmbeddingNet (normal vs outlier currents)",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    model_group.add_argument(
+        "--snn_threshold_normal",
+        help="LIF threshold for normal activations (abs(x)<=boundary) when snn_use_oat",
+        type=float,
+        default=1.5,
+    )
+    model_group.add_argument(
+        "--snn_threshold_outlier",
+        help="LIF threshold for outlier activations when snn_use_oat",
+        type=float,
+        default=2.5,
+    )
+    model_group.add_argument(
+        "--snn_outlier_percentile",
+        help="Quantile for abs(x) to set outlier boundary when snn_outlier_boundary is unset",
+        type=float,
+        default=0.95,
+    )
+    model_group.add_argument(
+        "--snn_outlier_boundary",
+        help="Fixed boundary on abs(x); if unset, use percentile of abs(x) per forward",
+        type=float,
+        default=None,
+    )
 
     model_group.add_argument(
         "--perceiver",

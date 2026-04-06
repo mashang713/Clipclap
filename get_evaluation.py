@@ -114,6 +114,11 @@ def get_evaluation(args):
         getattr(config, "snn_num_steps", 10),
         getattr(config, "snn_beta", 0.9),
         getattr(config, "snn_threshold", 1.0),
+        getattr(config, "snn_use_oat", False),
+        getattr(config, "snn_threshold_normal", 1.5),
+        getattr(config, "snn_threshold_outlier", 2.5),
+        getattr(config, "snn_outlier_percentile", 0.95),
+        getattr(config, "snn_outlier_boundary", None),
     )
 
     if config.new_model_sequence==True:

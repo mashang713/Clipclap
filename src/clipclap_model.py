@@ -1,4 +1,5 @@
 # system, numpy
+import logging
 import os
 import sys
 import numpy as np
@@ -23,6 +24,7 @@ except ImportError:  # optional until user runs: pip install snntorch
     snn_surrogate = None
 
 torch.set_printoptions(threshold=10_000)
+logger = logging.getLogger(__name__)
 def disable_running_stats(model):
     def _disable(module):
         if isinstance(module, nn.BatchNorm1d):
@@ -78,7 +80,12 @@ class SNN_EmbeddingNet(nn.Module):
     Leaky integrate-and-fire stack with the same constructor shape as EmbeddingNet.
     ``use_bn`` is ignored (no BatchNorm; use floating-point affine layers only).
     Output is the time-averaged spike rate (same shape as EmbeddingNet output).
+
+    Optional OAT (Outlier-Aware Threshold): dual Leaky IF with ``threshold_normal`` /
+    ``threshold_outlier`` on currents split by a boundary on ``abs(x)`` (fixed or percentile).
     """
+
+    _oat_config_logged = False
 
     def __init__(
         self,
@@ -90,6 +97,11 @@ class SNN_EmbeddingNet(nn.Module):
         num_steps=10,
         beta=0.9,
         threshold=1.0,
+        use_oat=False,
+        threshold_normal=1.5,
+        threshold_outlier=2.5,
+        outlier_percentile=0.95,
+        outlier_boundary=None,
     ):
         super().__init__()
         if snn is None or snn_surrogate is None:
@@ -98,24 +110,96 @@ class SNN_EmbeddingNet(nn.Module):
             )
         self.num_steps = int(num_steps)
         self.hidden_size = hidden_size
-        spike_grad = snn_surrogate.fast_sigmoid()
-        self.lif_kwargs = dict(beta=beta, threshold=threshold, spike_grad=spike_grad)
+        self.use_oat = bool(use_oat)
+        self.outlier_percentile = float(outlier_percentile)
+        self.oat_boundary_fixed = outlier_boundary
+        if self.oat_boundary_fixed is not None:
+            self.oat_boundary_fixed = float(self.oat_boundary_fixed)
 
-        if hidden_size > 0:
-            self.lin1 = nn.Linear(input_size, hidden_size)
-            self.lif1 = snn.Leaky(**self.lif_kwargs)
-            self.dropout1 = nn.Dropout(dropout)
-            self.lin2 = nn.Linear(hidden_size, output_size)
-            self.lif2 = snn.Leaky(**self.lif_kwargs)
-            self.dropout2 = nn.Dropout(dropout)
+        spike_grad = snn_surrogate.fast_sigmoid()
+
+        if self.use_oat:
+            self.lif_kwargs = None
+            tk_n, tk_o = float(threshold_normal), float(threshold_outlier)
+            if hidden_size > 0:
+                self.lin1 = nn.Linear(input_size, hidden_size)
+                self.lif1_normal = snn.Leaky(
+                    beta=beta, threshold=tk_n, spike_grad=spike_grad
+                )
+                self.lif1_outlier = snn.Leaky(
+                    beta=beta, threshold=tk_o, spike_grad=spike_grad
+                )
+                self.dropout1 = nn.Dropout(dropout)
+                self.lin2 = nn.Linear(hidden_size, output_size)
+                self.lif2_normal = snn.Leaky(
+                    beta=beta, threshold=tk_n, spike_grad=spike_grad
+                )
+                self.lif2_outlier = snn.Leaky(
+                    beta=beta, threshold=tk_o, spike_grad=spike_grad
+                )
+                self.dropout2 = nn.Dropout(dropout)
+            else:
+                self.lin1 = nn.Linear(input_size, output_size)
+                self.lif1_normal = snn.Leaky(
+                    beta=beta, threshold=tk_n, spike_grad=spike_grad
+                )
+                self.lif1_outlier = snn.Leaky(
+                    beta=beta, threshold=tk_o, spike_grad=spike_grad
+                )
+                self.dropout1 = nn.Dropout(dropout)
+            if not SNN_EmbeddingNet._oat_config_logged:
+                SNN_EmbeddingNet._oat_config_logged = True
+                logger.info("SNN OAT enabled")
+                logger.info(
+                    "threshold_normal=%s, threshold_outlier=%s",
+                    threshold_normal,
+                    threshold_outlier,
+                )
+                if self.oat_boundary_fixed is not None:
+                    logger.info(
+                        "outlier boundary mode=fixed, value=%s",
+                        self.oat_boundary_fixed,
+                    )
+                else:
+                    logger.info(
+                        "outlier boundary mode=percentile, p=%s",
+                        self.outlier_percentile,
+                    )
         else:
-            self.lin1 = nn.Linear(input_size, output_size)
-            self.lif1 = snn.Leaky(**self.lif_kwargs)
-            self.dropout1 = nn.Dropout(dropout)
+            self.lif_kwargs = dict(beta=beta, threshold=threshold, spike_grad=spike_grad)
+            if hidden_size > 0:
+                self.lin1 = nn.Linear(input_size, hidden_size)
+                self.lif1 = snn.Leaky(**self.lif_kwargs)
+                self.dropout1 = nn.Dropout(dropout)
+                self.lin2 = nn.Linear(hidden_size, output_size)
+                self.lif2 = snn.Leaky(**self.lif_kwargs)
+                self.dropout2 = nn.Dropout(dropout)
+            else:
+                self.lin1 = nn.Linear(input_size, output_size)
+                self.lif1 = snn.Leaky(**self.lif_kwargs)
+                self.dropout1 = nn.Dropout(dropout)
+
+    def _oat_split(self, cur):
+        abs_x = abs(cur)
+        if self.oat_boundary_fixed is not None:
+            boundary = torch.as_tensor(
+                self.oat_boundary_fixed, device=cur.device, dtype=cur.dtype
+            )
+        else:
+            with torch.no_grad():
+                boundary = torch.quantile(abs_x.flatten(), self.outlier_percentile)
+            boundary = boundary.detach()
+        normal_mask = (abs_x <= boundary).to(dtype=cur.dtype)
+        outlier_mask = (abs_x > boundary).to(dtype=cur.dtype)
+        return cur * normal_mask, cur * outlier_mask
 
     def forward(self, x):
         if self.hidden_size > 0:
+            if self.use_oat:
+                return self._forward_two_layer_oat(x)
             return self._forward_two_layer(x)
+        if self.use_oat:
+            return self._forward_one_layer_oat(x)
         return self._forward_one_layer(x)
 
     def _forward_one_layer(self, x):
@@ -124,6 +208,20 @@ class SNN_EmbeddingNet(nn.Module):
         for _ in range(self.num_steps):
             cur = self.lin1(x)
             spk, mem = self.lif1(cur, mem)
+            spk = self.dropout1(spk)
+            spike_sum = spike_sum + spk
+        return spike_sum / self.num_steps
+
+    def _forward_one_layer_oat(self, x):
+        mem_n = torch.zeros_like(self.lin1(x))
+        mem_o = torch.zeros_like(self.lin1(x))
+        spike_sum = torch.zeros_like(mem_n)
+        for _ in range(self.num_steps):
+            cur = self.lin1(x)
+            cur_n, cur_o = self._oat_split(cur)
+            spk_n, mem_n = self.lif1_normal(cur_n, mem_n)
+            spk_o, mem_o = self.lif1_outlier(cur_o, mem_o)
+            spk = spk_n + spk_o
             spk = self.dropout1(spk)
             spike_sum = spike_sum + spk
         return spike_sum / self.num_steps
@@ -139,6 +237,29 @@ class SNN_EmbeddingNet(nn.Module):
             spk1 = self.dropout1(spk1)
             cur2 = self.lin2(spk1)
             spk2, mem2 = self.lif2(cur2, mem2)
+            spk2 = self.dropout2(spk2)
+            spike_sum = spike_sum + spk2
+        return spike_sum / self.num_steps
+
+    def _forward_two_layer_oat(self, x):
+        mem1_n = torch.zeros_like(self.lin1(x))
+        mem1_o = torch.zeros_like(self.lin1(x))
+        z = torch.zeros(x.size(0), self.hidden_size, device=x.device, dtype=x.dtype)
+        mem2_n = torch.zeros_like(self.lin2(z))
+        mem2_o = torch.zeros_like(self.lin2(z))
+        spike_sum = torch.zeros_like(mem2_n)
+        for _ in range(self.num_steps):
+            cur1 = self.lin1(x)
+            c1_n, c1_o = self._oat_split(cur1)
+            sp1_n, mem1_n = self.lif1_normal(c1_n, mem1_n)
+            sp1_o, mem1_o = self.lif1_outlier(c1_o, mem1_o)
+            spk1 = sp1_n + sp1_o
+            spk1 = self.dropout1(spk1)
+            cur2 = self.lin2(spk1)
+            c2_n, c2_o = self._oat_split(cur2)
+            sp2_n, mem2_n = self.lif2_normal(c2_n, mem2_n)
+            sp2_o, mem2_o = self.lif2_outlier(c2_o, mem2_o)
+            spk2 = sp2_n + sp2_o
             spk2 = self.dropout2(spk2)
             spike_sum = spike_sum + spk2
         return spike_sum / self.num_steps
