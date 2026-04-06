@@ -81,11 +81,9 @@ class SNN_EmbeddingNet(nn.Module):
     ``use_bn`` is ignored (no BatchNorm; use floating-point affine layers only).
     Output is the time-averaged spike rate (same shape as EmbeddingNet output).
 
-    Optional OAT (Outlier-Aware Threshold): dual Leaky IF with ``threshold_normal`` /
-    ``threshold_outlier`` on currents split by a boundary on ``abs(x)`` (fixed or percentile).
+    Optional AIF (Activation-aware redistribution): single-route dynamics with channel-wise
+    threshold and optional membrane offset, injected from offline ANN activation stats.
     """
-
-    _oat_config_logged = False
 
     def __init__(
         self,
@@ -97,11 +95,7 @@ class SNN_EmbeddingNet(nn.Module):
         num_steps=10,
         beta=0.9,
         threshold=1.0,
-        use_oat=False,
-        threshold_normal=1.5,
-        threshold_outlier=2.5,
-        outlier_percentile=0.95,
-        outlier_boundary=None,
+        use_aif=False,
     ):
         super().__init__()
         if snn is None or snn_surrogate is None:
@@ -110,96 +104,88 @@ class SNN_EmbeddingNet(nn.Module):
             )
         self.num_steps = int(num_steps)
         self.hidden_size = hidden_size
-        self.use_oat = bool(use_oat)
-        self.outlier_percentile = float(outlier_percentile)
-        self.oat_boundary_fixed = outlier_boundary
-        if self.oat_boundary_fixed is not None:
-            self.oat_boundary_fixed = float(self.oat_boundary_fixed)
+        self.use_aif = bool(use_aif)
 
         spike_grad = snn_surrogate.fast_sigmoid()
 
-        if self.use_oat:
-            self.lif_kwargs = None
-            tk_n, tk_o = float(threshold_normal), float(threshold_outlier)
-            if hidden_size > 0:
-                self.lin1 = nn.Linear(input_size, hidden_size)
-                self.lif1_normal = snn.Leaky(
-                    beta=beta, threshold=tk_n, spike_grad=spike_grad
-                )
-                self.lif1_outlier = snn.Leaky(
-                    beta=beta, threshold=tk_o, spike_grad=spike_grad
-                )
-                self.dropout1 = nn.Dropout(dropout)
-                self.lin2 = nn.Linear(hidden_size, output_size)
-                self.lif2_normal = snn.Leaky(
-                    beta=beta, threshold=tk_n, spike_grad=spike_grad
-                )
-                self.lif2_outlier = snn.Leaky(
-                    beta=beta, threshold=tk_o, spike_grad=spike_grad
-                )
-                self.dropout2 = nn.Dropout(dropout)
-            else:
-                self.lin1 = nn.Linear(input_size, output_size)
-                self.lif1_normal = snn.Leaky(
-                    beta=beta, threshold=tk_n, spike_grad=spike_grad
-                )
-                self.lif1_outlier = snn.Leaky(
-                    beta=beta, threshold=tk_o, spike_grad=spike_grad
-                )
-                self.dropout1 = nn.Dropout(dropout)
-            if not SNN_EmbeddingNet._oat_config_logged:
-                SNN_EmbeddingNet._oat_config_logged = True
-                logger.info("SNN OAT enabled")
-                logger.info(
-                    "threshold_normal=%s, threshold_outlier=%s",
-                    threshold_normal,
-                    threshold_outlier,
-                )
-                if self.oat_boundary_fixed is not None:
-                    logger.info(
-                        "outlier boundary mode=fixed, value=%s",
-                        self.oat_boundary_fixed,
-                    )
-                else:
-                    logger.info(
-                        "outlier boundary mode=percentile, p=%s",
-                        self.outlier_percentile,
-                    )
-        else:
-            self.lif_kwargs = dict(beta=beta, threshold=threshold, spike_grad=spike_grad)
-            if hidden_size > 0:
-                self.lin1 = nn.Linear(input_size, hidden_size)
-                self.lif1 = snn.Leaky(**self.lif_kwargs)
-                self.dropout1 = nn.Dropout(dropout)
-                self.lin2 = nn.Linear(hidden_size, output_size)
-                self.lif2 = snn.Leaky(**self.lif_kwargs)
-                self.dropout2 = nn.Dropout(dropout)
-            else:
-                self.lin1 = nn.Linear(input_size, output_size)
-                self.lif1 = snn.Leaky(**self.lif_kwargs)
-                self.dropout1 = nn.Dropout(dropout)
+        # AIF calibration buffers (injected after construction).
+        self._aif_mode = "none"
+        self.register_buffer("_aif_threshold_1", torch.tensor([]), persistent=False)
+        self.register_buffer("_aif_offset_1", torch.tensor([]), persistent=False)
+        self.register_buffer("_aif_threshold_2", torch.tensor([]), persistent=False)
+        self.register_buffer("_aif_offset_2", torch.tensor([]), persistent=False)
 
-    def _oat_split(self, cur):
-        abs_x = abs(cur)
-        if self.oat_boundary_fixed is not None:
-            boundary = torch.as_tensor(
-                self.oat_boundary_fixed, device=cur.device, dtype=cur.dtype
-            )
+        self.lif_kwargs = dict(beta=beta, threshold=threshold, spike_grad=spike_grad)
+        if hidden_size > 0:
+            self.lin1 = nn.Linear(input_size, hidden_size)
+            self.lif1 = snn.Leaky(**self.lif_kwargs)
+            self.dropout1 = nn.Dropout(dropout)
+            self.lin2 = nn.Linear(hidden_size, output_size)
+            self.lif2 = snn.Leaky(**self.lif_kwargs)
+            self.dropout2 = nn.Dropout(dropout)
         else:
-            with torch.no_grad():
-                boundary = torch.quantile(abs_x.flatten(), self.outlier_percentile)
-            boundary = boundary.detach()
-        normal_mask = (abs_x <= boundary).to(dtype=cur.dtype)
-        outlier_mask = (abs_x > boundary).to(dtype=cur.dtype)
-        return cur * normal_mask, cur * outlier_mask
+            self.lin1 = nn.Linear(input_size, output_size)
+            self.lif1 = snn.Leaky(**self.lif_kwargs)
+            self.dropout1 = nn.Dropout(dropout)
+
+        if self.use_aif:
+            logger.info("AIF enabled in SNN_EmbeddingNet (calibration will be injected at runtime)")
+
+    def set_aif_params(self, layer_idx: int, threshold_c: torch.Tensor, offset_c: torch.Tensor, mode: str):
+        """
+        Inject channel-wise AIF calibration into this embedding net.
+        layer_idx: 1 for lin1, 2 for lin2 (only if hidden_size>0).
+        threshold_c/offset_c are 1D tensors of length C_out for that layer.
+        """
+        if threshold_c is None:
+            threshold_c = torch.tensor([], device=self.lin1.weight.device)
+        if offset_c is None:
+            offset_c = torch.tensor([], device=self.lin1.weight.device)
+        if layer_idx == 1:
+            self._aif_threshold_1 = threshold_c.detach()
+            self._aif_offset_1 = offset_c.detach()
+        elif layer_idx == 2:
+            self._aif_threshold_2 = threshold_c.detach()
+            self._aif_offset_2 = offset_c.detach()
+        else:
+            raise ValueError("layer_idx must be 1 or 2")
+        self._aif_mode = str(mode)
+
+    def _aif_spike(self, mem, cur, threshold_c, offset_c):
+        """
+        AIF neuron dynamics (channel-wise threshold/offset) with surrogate gradient:
+            mem = beta*mem + cur - offset
+            spk = H(mem-threshold)
+            mem = mem - spk*threshold
+        """
+        beta = self.lif_kwargs["beta"]
+        spike_grad = self.lif_kwargs["spike_grad"]
+
+        if offset_c is None or offset_c.numel() == 0:
+            offset = 0.0
+        else:
+            offset = offset_c.view(1, -1).to(device=cur.device, dtype=cur.dtype)
+
+        if threshold_c is None or threshold_c.numel() == 0:
+            thr = self.lif_kwargs["threshold"]
+            threshold = torch.as_tensor(thr, device=cur.device, dtype=cur.dtype)
+        else:
+            threshold = threshold_c.view(1, -1).to(device=cur.device, dtype=cur.dtype)
+
+        mem = beta * mem + cur - offset
+        hard = (mem >= threshold).to(dtype=cur.dtype)
+        soft = spike_grad(mem - threshold)
+        spk = hard + (soft - soft.detach())
+        mem = mem - hard * threshold
+        return spk, mem
 
     def forward(self, x):
         if self.hidden_size > 0:
-            if self.use_oat:
-                return self._forward_two_layer_oat(x)
+            if self.use_aif:
+                return self._forward_two_layer_aif(x)
             return self._forward_two_layer(x)
-        if self.use_oat:
-            return self._forward_one_layer_oat(x)
+        if self.use_aif:
+            return self._forward_one_layer_aif(x)
         return self._forward_one_layer(x)
 
     def _forward_one_layer(self, x):
@@ -212,16 +198,12 @@ class SNN_EmbeddingNet(nn.Module):
             spike_sum = spike_sum + spk
         return spike_sum / self.num_steps
 
-    def _forward_one_layer_oat(self, x):
-        mem_n = torch.zeros_like(self.lin1(x))
-        mem_o = torch.zeros_like(self.lin1(x))
-        spike_sum = torch.zeros_like(mem_n)
+    def _forward_one_layer_aif(self, x):
+        mem = torch.zeros_like(self.lin1(x))
+        spike_sum = torch.zeros_like(mem)
         for _ in range(self.num_steps):
             cur = self.lin1(x)
-            cur_n, cur_o = self._oat_split(cur)
-            spk_n, mem_n = self.lif1_normal(cur_n, mem_n)
-            spk_o, mem_o = self.lif1_outlier(cur_o, mem_o)
-            spk = spk_n + spk_o
+            spk, mem = self._aif_spike(mem, cur, self._aif_threshold_1, self._aif_offset_1)
             spk = self.dropout1(spk)
             spike_sum = spike_sum + spk
         return spike_sum / self.num_steps
@@ -241,25 +223,17 @@ class SNN_EmbeddingNet(nn.Module):
             spike_sum = spike_sum + spk2
         return spike_sum / self.num_steps
 
-    def _forward_two_layer_oat(self, x):
-        mem1_n = torch.zeros_like(self.lin1(x))
-        mem1_o = torch.zeros_like(self.lin1(x))
+    def _forward_two_layer_aif(self, x):
+        mem1 = torch.zeros_like(self.lin1(x))
         z = torch.zeros(x.size(0), self.hidden_size, device=x.device, dtype=x.dtype)
-        mem2_n = torch.zeros_like(self.lin2(z))
-        mem2_o = torch.zeros_like(self.lin2(z))
-        spike_sum = torch.zeros_like(mem2_n)
+        mem2 = torch.zeros_like(self.lin2(z))
+        spike_sum = torch.zeros_like(mem2)
         for _ in range(self.num_steps):
             cur1 = self.lin1(x)
-            c1_n, c1_o = self._oat_split(cur1)
-            sp1_n, mem1_n = self.lif1_normal(c1_n, mem1_n)
-            sp1_o, mem1_o = self.lif1_outlier(c1_o, mem1_o)
-            spk1 = sp1_n + sp1_o
+            spk1, mem1 = self._aif_spike(mem1, cur1, self._aif_threshold_1, self._aif_offset_1)
             spk1 = self.dropout1(spk1)
             cur2 = self.lin2(spk1)
-            c2_n, c2_o = self._oat_split(cur2)
-            sp2_n, mem2_n = self.lif2_normal(c2_n, mem2_n)
-            sp2_o, mem2_o = self.lif2_outlier(c2_o, mem2_o)
-            spk2 = sp2_n + sp2_o
+            spk2, mem2 = self._aif_spike(mem2, cur2, self._aif_threshold_2, self._aif_offset_2)
             spk2 = self.dropout2(spk2)
             spike_sum = spike_sum + spk2
         return spike_sum / self.num_steps
@@ -367,6 +341,158 @@ def init_snn_clipclap_from_ann_checkpoint(
     if torch.cuda.is_available() and "cuda" in str(device):
         torch.cuda.empty_cache()
     print("init_snn_from_ann: copied fused Linear weights from ANN checkpoint into SNN modules.")
+
+
+def _embeddingnet_get_linear_modules(emb: EmbeddingNet):
+    """Return (lin1, lin2_or_None) from EmbeddingNet.fc layout."""
+    linears = [m for m in emb.fc.children() if isinstance(m, nn.Linear)]
+    if len(linears) == 1:
+        return linears[0], None
+    if len(linears) == 2:
+        return linears[0], linears[1]
+    raise ValueError(f"Unexpected number of Linear layers in EmbeddingNet: {len(linears)}")
+
+
+@torch.no_grad()
+def collect_ann_activation_stats(
+    ann_model: "ClipClap_model",
+    data_loader,
+    device,
+    num_batches: int = 50,
+):
+    """
+    Collect per-channel mean/std of selected ANN Linear outputs.
+    Returns dict: { layer_name: {mu: Tensor[C], sigma: Tensor[C], n: int} }
+    """
+    ann_model.eval()
+    ann_model.to(device)
+
+    targets = {}
+    o1, _ = _embeddingnet_get_linear_modules(ann_model.O_enc)
+    w1, _ = _embeddingnet_get_linear_modules(ann_model.W_enc)
+    targets["O_enc.lin1"] = o1
+    targets["W_enc.lin1"] = w1
+
+    op1, op2 = _embeddingnet_get_linear_modules(ann_model.O_proj)
+    do1, do2 = _embeddingnet_get_linear_modules(ann_model.D_o)
+    targets["O_proj.lin1"] = op1
+    if op2 is not None:
+        targets["O_proj.lin2"] = op2
+    targets["D_o.lin1"] = do1
+    if do2 is not None:
+        targets["D_o.lin2"] = do2
+
+    wp1, _ = _embeddingnet_get_linear_modules(ann_model.W_proj)
+    dw1, _ = _embeddingnet_get_linear_modules(ann_model.D_w)
+    targets["W_proj.lin1"] = wp1
+    targets["D_w.lin1"] = dw1
+
+    stats = {}
+    for k, lin in targets.items():
+        c = lin.out_features
+        stats[k] = {
+            "sum": torch.zeros(c, device=device, dtype=torch.float64),
+            "sumsq": torch.zeros(c, device=device, dtype=torch.float64),
+            "n": 0,
+        }
+
+    hooks = []
+
+    def _make_hook(name):
+        def hook(_mod, _inp, out):
+            y = out.detach()
+            if y.dim() != 2:
+                y = y.view(y.size(0), -1)
+            s = stats[name]
+            s["sum"] += y.to(torch.float64).sum(dim=0)
+            s["sumsq"] += (y.to(torch.float64) ** 2).sum(dim=0)
+            s["n"] += int(y.size(0))
+        return hook
+
+    for name, lin in targets.items():
+        hooks.append(lin.register_forward_hook(_make_hook(name)))
+
+    for b_idx, (data, _target) in enumerate(data_loader):
+        if b_idx >= int(num_batches):
+            break
+        p = data["positive"]
+        x_a = p["audio"].to(device)
+        x_v = p["video"].to(device)
+        x_t = p["text"].to(device)
+        masks = {"audio": p["audio_mask"], "video": p["video_mask"]}
+        timesteps = {"audio": p["timestep"]["audio"], "video": p["timestep"]["video"]}
+        _ = ann_model.forward(x_a, x_v, x_t, masks, timesteps)
+
+    for h in hooks:
+        h.remove()
+
+    out = {}
+    for name, s in stats.items():
+        n = max(1, s["n"])
+        mu = (s["sum"] / n).to(torch.float32).cpu()
+        var = (s["sumsq"] / n) - (s["sum"] / n) ** 2
+        var = torch.clamp(var, min=0.0)
+        sigma = torch.sqrt(var).to(torch.float32).cpu()
+        out[name] = {"mu": mu, "sigma": sigma, "n": int(s["n"])}
+    return out
+
+
+def apply_aif_calibration_to_snn(
+    snn_model: "ClipClap_model",
+    stats: dict,
+    mode: str,
+    k: float = 3.0,
+):
+    """
+    Apply AIF-lite/full calibration to SNN_EmbeddingNet modules in ClipClap_model.
+    mode: 'cw_threshold' or 'cw_threshold_offset'
+    """
+    if mode not in ("cw_threshold", "cw_threshold_offset"):
+        raise ValueError(f"Unknown snn_aif_mode: {mode}")
+    logger.info("AIF enabled, mode=%s, k=%s", mode, k)
+
+    def _make(stat_key):
+        st = stats.get(stat_key)
+        if st is None:
+            return None, None, False
+        sigma = st["sigma"]
+        mu = st["mu"]
+        thr = float(k) * sigma
+        off = torch.zeros_like(mu) if mode == "cw_threshold" else mu
+        return thr, off, True
+
+    mapping = [
+        ("O_enc", 1, "O_enc.lin1"),
+        ("W_enc", 1, "W_enc.lin1"),
+        ("O_proj", 1, "O_proj.lin1"),
+        ("O_proj", 2, "O_proj.lin2"),
+        ("D_o", 1, "D_o.lin1"),
+        ("D_o", 2, "D_o.lin2"),
+        ("W_proj", 1, "W_proj.lin1"),
+        ("D_w", 1, "D_w.lin1"),
+    ]
+
+    for mod_name, layer_idx, stat_key in mapping:
+        mod = getattr(snn_model, mod_name, None)
+        if mod is None or not isinstance(mod, SNN_EmbeddingNet):
+            continue
+        thr, off, ok = _make(stat_key)
+        if not ok:
+            logger.info("AIF stats missing for %s (fallback to global threshold)", stat_key)
+            continue
+        thr_t = thr.to(mod.lin1.weight.device)
+        off_t = off.to(mod.lin1.weight.device)
+        mod.set_aif_params(layer_idx=layer_idx, threshold_c=thr_t, offset_c=off_t, mode=mode)
+        logger.info(
+            "AIF layer=%s thr(mean/min/max)=%.4f/%.4f/%.4f off(mean/min/max)=%.4f/%.4f/%.4f",
+            stat_key,
+            float(thr.mean()),
+            float(thr.min()),
+            float(thr.max()),
+            float(off.mean()),
+            float(off.min()),
+            float(off.max()),
+        )
 
 
 

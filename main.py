@@ -10,7 +10,12 @@ from get_evaluation import get_evaluation
 from src.dataset import ActivityNetDataset, AudioSetZSLDataset, ContrastiveDataset, VGGSoundDataset, UCFDataset
 from src.dataset import DefaultCollator
 from src.metrics import DetailedLosses, MeanClassAccuracy, PercentOverlappingClasses, TargetDifficulty
-from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint
+from src.clipclap_model import (
+    build_clipclap_model,
+    init_snn_clipclap_from_ann_checkpoint,
+    collect_ann_activation_stats,
+    apply_aif_calibration_to_snn,
+)
 from src.sampler import SamplerFactory
 from src.train import train
 from src.loss import L2Loss
@@ -236,11 +241,13 @@ def main(args):
         getattr(args, "snn_num_steps", 10),
         getattr(args, "snn_beta", 0.9),
         getattr(args, "snn_threshold", 1.0),
-        getattr(args, "snn_use_oat", False),
-        getattr(args, "snn_threshold_normal", 1.5),
-        getattr(args, "snn_threshold_outlier", 2.5),
-        getattr(args, "snn_outlier_percentile", 0.95),
-        getattr(args, "snn_outlier_boundary", None),
+        getattr(args, "snn_use_aif", False),
+        getattr(args, "snn_aif_mode", "none"),
+        getattr(args, "snn_aif_k", 3.0),
+        getattr(args, "snn_aif_stats_path", None),
+        getattr(args, "snn_aif_collect_stats", False),
+        getattr(args, "snn_aif_num_batches", 50),
+        getattr(args, "snn_aif_dataset_split", "train"),
     )
     if args.new_model_sequence==True:
         model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)
@@ -250,6 +257,44 @@ def main(args):
         raise AttributeError("No correct model name.")
     print_model_size(model, logger)
     model.to(args.device)
+
+    # AIF stats collection mode (ANN forward only; no training)
+    if getattr(args, "snn_aif_collect_stats", False):
+        if args.snn_init_ann_path is None:
+            raise ValueError("--snn_aif_collect_stats requires --snn_init_ann_path (ANN checkpoint)")
+        if args.snn_aif_stats_path is None:
+            raise ValueError("--snn_aif_collect_stats requires --snn_aif_stats_path")
+        # Build ANN backend model and load checkpoint weights
+        ann_params = dict(model_params)
+        ann_params["model_backend"] = "ann"
+        ann_params["snn_embedding_kwargs"] = {}
+        ann_model = build_clipclap_model(ann_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)
+
+        from src.utils import load_model_weights
+
+        _ = load_model_weights(args.snn_init_ann_path, ann_model)
+
+        split = str(getattr(args, "snn_aif_dataset_split", "train"))
+        loader_map = {
+            "train": train_loader if not args.retrain_all else train_val_loader,
+            "train_val": train_val_loader if args.retrain_all else train_loader,
+            "val": val_all_loader,
+            "test": final_test_loader,
+        }
+        if split not in loader_map or loader_map[split] is None:
+            raise ValueError(f"Unknown/unsupported snn_aif_dataset_split: {split}")
+        stats = collect_ann_activation_stats(
+            ann_model=ann_model,
+            data_loader=loader_map[split],
+            device=args.device,
+            num_batches=int(getattr(args, "snn_aif_num_batches", 50)),
+        )
+        stats_path = args.snn_aif_stats_path
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(stats, stats_path)
+        logger.info("Saved AIF activation stats to %s", str(stats_path))
+        logger.info("AIF stats keys: %s", list(stats.keys()))
+        return log_dir, best_epoch
 
     if getattr(args, "model_backend", "ann") == "snn" and getattr(args, "snn_init_ann_path", None):
         init_snn_clipclap_from_ann_checkpoint(
@@ -261,6 +306,22 @@ def main(args):
             args.input_size_video,
         )
         logger.info("SNN Linear layers initialized from ANN checkpoint: %s", args.snn_init_ann_path)
+
+    # AIF calibration injection (SNN runtime)
+    if getattr(args, "model_backend", "ann") == "snn" and getattr(args, "snn_use_aif", False):
+        mode = getattr(args, "snn_aif_mode", "none")
+        if mode == "none":
+            logger.info("AIF requested but mode=none; skipping injection")
+        else:
+            if args.snn_aif_stats_path is None:
+                raise ValueError("--snn_use_aif requires --snn_aif_stats_path")
+            stats = torch.load(args.snn_aif_stats_path, map_location="cpu")
+            apply_aif_calibration_to_snn(
+                snn_model=model,
+                stats=stats,
+                mode=mode,
+                k=float(getattr(args, "snn_aif_k", 3.0)),
+            )
 
     distance_fn = getattr(sys.modules[__name__], args.distance_fn)()
     metrics = [

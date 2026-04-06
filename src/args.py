@@ -435,36 +435,51 @@ def args_main(*args, **kwargs):
         default=None,
     )
     model_group.add_argument(
-        "--snn_use_oat",
-        help="Outlier-Aware dual-threshold Leaky IF in SNN_EmbeddingNet (normal vs outlier currents)",
+        "--snn_use_aif",
+        help="Enable AIF-style channel-wise threshold/offset calibration in single-route SNN neurons",
         type=str_to_bool,
         nargs="?",
         const=True,
         default=False,
     )
     model_group.add_argument(
-        "--snn_threshold_normal",
-        help="LIF threshold for normal activations (abs(x)<=boundary) when snn_use_oat",
-        type=float,
-        default=1.5,
+        "--snn_aif_mode",
+        help="AIF mode: none / cw_threshold (AIF-lite) / cw_threshold_offset (AIF-full)",
+        choices=["none", "cw_threshold", "cw_threshold_offset"],
+        type=str,
+        default="none",
     )
     model_group.add_argument(
-        "--snn_threshold_outlier",
-        help="LIF threshold for outlier activations when snn_use_oat",
+        "--snn_aif_k",
+        help="AIF scaling factor k for threshold_c = k*sigma_c",
         type=float,
-        default=2.5,
+        default=3.0,
     )
     model_group.add_argument(
-        "--snn_outlier_percentile",
-        help="Quantile for abs(x) to set outlier boundary when snn_outlier_boundary is unset",
-        type=float,
-        default=0.95,
-    )
-    model_group.add_argument(
-        "--snn_outlier_boundary",
-        help="Fixed boundary on abs(x); if unset, use percentile of abs(x) per forward",
-        type=float,
+        "--snn_aif_stats_path",
+        help="Path to saved ANN activation stats for AIF calibration",
+        type=pathlib.Path,
         default=None,
+    )
+    model_group.add_argument(
+        "--snn_aif_collect_stats",
+        help="Collect ANN activation stats and save to snn_aif_stats_path; no training",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    model_group.add_argument(
+        "--snn_aif_num_batches",
+        help="Number of batches to use for ANN activation stats collection",
+        type=int,
+        default=50,
+    )
+    model_group.add_argument(
+        "--snn_aif_dataset_split",
+        help="Dataset split for stats collection (train/train_val/val/test)",
+        type=str,
+        default="train",
     )
 
     model_group.add_argument(
