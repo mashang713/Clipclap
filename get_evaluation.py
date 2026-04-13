@@ -13,10 +13,26 @@ from src.test import test
 from src.utils import fix_seeds, load_args, load_model_parameters, setup_evaluation, load_model_weights, log_hparams, print_model_size
 from src.utils_improvements import get_model_params
 
+_CALIBRATION_KEYS = (
+    "use_calibrated_stacking",
+    "calibration_mode",
+    "calibration_combined_beta_strategy",
+    "calibration_beta_start",
+    "calibration_beta_end",
+    "calibration_beta_steps",
+    "calibration_tau_start",
+    "calibration_tau_end",
+    "calibration_tau_steps",
+    "calibration_eval_save_json",
+)
 
-def get_evaluation(args):
+
+def get_evaluation(args, cli_args=None):
 
     config = load_args(args.load_path_stage_B)
+    if cli_args is not None:
+        for k in _CALIBRATION_KEYS:
+            setattr(config, k, getattr(cli_args, k))
     config.root_dir = args.root_dir
     if config.input_size is not None:
         config.input_size_audio = config.input_size
@@ -160,4 +176,4 @@ def get_evaluation(args):
 
 if __name__ == "__main__":
     args, eval_args = args_main()
-    get_evaluation(eval_args)
+    get_evaluation(eval_args, cli_args=args)

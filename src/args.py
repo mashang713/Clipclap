@@ -435,6 +435,74 @@ def args_main(*args, **kwargs):
         default=None,
     )
 
+    calib_group = parser.add_argument_group("calibrated_stacking")
+    calib_group.add_argument(
+        "--use_calibrated_stacking",
+        help="If true, GZSL prediction uses calibrated distances (see calibration_mode). If false, argmin over raw distances.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+    )
+    calib_group.add_argument(
+        "--calibration_mode",
+        help='beta: dist_cal = dist + beta*seen_mask; tau_beta: dist_cal = tau*dist + beta*seen_mask',
+        choices=["beta", "tau_beta"],
+        default="beta",
+        type=str,
+    )
+    calib_group.add_argument(
+        "--calibration_combined_beta_strategy",
+        help="legacy_average: mean of audio/video/both val betas (original test.py). search_on_both: grid-search (tau,beta) on val for combined only; test uses fixed best.",
+        choices=["legacy_average", "search_on_both"],
+        default="legacy_average",
+        type=str,
+    )
+    calib_group.add_argument(
+        "--calibration_beta_start",
+        help="Grid start for beta (validation search).",
+        type=float,
+        default=0.0,
+    )
+    calib_group.add_argument(
+        "--calibration_beta_end",
+        help="Grid end for beta (validation search).",
+        type=float,
+        default=5.0,
+    )
+    calib_group.add_argument(
+        "--calibration_beta_steps",
+        help="Number of beta grid points (inclusive linspace).",
+        type=int,
+        default=76,
+    )
+    calib_group.add_argument(
+        "--calibration_tau_start",
+        help="Grid start for tau when calibration_mode=tau_beta.",
+        type=float,
+        default=0.5,
+    )
+    calib_group.add_argument(
+        "--calibration_tau_end",
+        help="Grid end for tau when calibration_mode=tau_beta.",
+        type=float,
+        default=2.0,
+    )
+    calib_group.add_argument(
+        "--calibration_tau_steps",
+        help="Number of tau grid points when calibration_mode=tau_beta.",
+        type=int,
+        default=16,
+    )
+    calib_group.add_argument(
+        "--calibration_eval_save_json",
+        help="If true, write calibration_stacking_log.json under eval_dir during test/eval.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+    )
+
     model_group.add_argument(
         "--perceiver",
         help="Flag to use the Perceiver model",

@@ -50,7 +50,7 @@ def run():
     if run_mode == 'eval' or run_mode == 'all':
         assert eval_args.load_path_stage_A != None
         assert eval_args.load_path_stage_B != None
-        get_evaluation(eval_args)
+        get_evaluation(eval_args, cli_args=args)
 
 
 def main(args):
