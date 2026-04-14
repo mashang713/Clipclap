@@ -657,7 +657,8 @@ class ClipClap_model(nn.Module):
         teacher = getattr(self, "_geometry_teacher", None)
         geom_teacher_out = None
         if (
-            teacher is not None
+            self.training
+            and teacher is not None
             and cfg.get("use_geometry_kd", False)
             and self._use_snn
         ):

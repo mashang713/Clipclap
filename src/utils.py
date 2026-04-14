@@ -167,14 +167,31 @@ def setup_visualizations(args, *stats):
     return logger, eval_dir, test_stats, writer
 
 
+def _canonical_state_key(name: str) -> str:
+    """Match load_model_parameters: strip DataParallel 'module.' prefixes for key comparison."""
+    while name.startswith("module."):
+        name = name[len("module.") :]
+    return name
+
+
+def _is_geometry_teacher_state_key(name: str) -> bool:
+    """True for frozen ANN teacher params; never needed in checkpoints or eval student load."""
+    return _canonical_state_key(name).startswith("_geometry_teacher.")
+
+
+def state_dict_without_geometry_teacher(model_state: dict) -> dict:
+    return {k: v for k, v in model_state.items() if not _is_geometry_teacher_state_key(k)}
+
+
 def save_best_model(epoch, best_metric, model, optimizer, log_dir, args, metric="", checkpoint=False):
     logger = logging.getLogger()
     logger.info(f"Saving model to {log_dir} with {metric} = {best_metric:.4f}")
     if optimizer is None:
         optimizer = model.optimizer_gen
+    raw_state = model.state_dict() if args.data_parallel == False else model.module.state_dict()
     save_dict = {
         "epoch": epoch + 1,
-        "model": model.state_dict() if args.data_parallel == False else model.module.state_dict(),
+        "model": state_dict_without_geometry_teacher(raw_state),
         "optimizer": optimizer.state_dict(),
         "metric": metric
     }
@@ -220,14 +237,29 @@ def load_model_parameters(model, model_weights):
     logger = logging.getLogger()
     loaded_state = model_weights
     self_state = model.state_dict()
+    skipped_geometry_teacher = 0
+    skipped_unexpected = 0
     for name, param in loaded_state.items():
-        param = param
-        if 'module.' in name:
-            name = name.replace('module.', '')
-        if name in self_state.keys():
-            self_state[name].copy_(param)
+        if _is_geometry_teacher_state_key(name):
+            skipped_geometry_teacher += 1
+            continue
+        load_name = name
+        if "module." in load_name:
+            load_name = load_name.replace("module.", "")
+        if load_name in self_state.keys():
+            self_state[load_name].copy_(param)
         else:
-            logger.info("didnt load ", name)
+            skipped_unexpected += 1
+    if skipped_geometry_teacher:
+        logger.info(
+            "Ignored %d frozen-teacher checkpoint keys (_geometry_teacher.*); not loaded into this model.",
+            skipped_geometry_teacher,
+        )
+    if skipped_unexpected:
+        logger.info(
+            "Checkpoint had %d keys with no matching parameter in model (skipped).",
+            skipped_unexpected,
+        )
 
 
 def load_args(path):

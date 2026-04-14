@@ -269,6 +269,8 @@ def main(args):
         "lambda_pair_av": float(getattr(args, "lambda_pair_av", 0.1)),
         "lambda_pair_txt": float(getattr(args, "lambda_pair_txt", 0.1)),
     }
+    # Frozen teacher is attached only for training; validation uses model.eval() (no teacher forward),
+    # and get_evaluation strips teacher + KD flags so checkpoints load without _geometry_teacher.* noise.
     model._geometry_teacher = None
     if getattr(args, "model_backend", "ann") == "snn" and model._geometry_cfg["use_geometry_kd"]:
         tpath = getattr(args, "teacher_ann_path", None) or getattr(args, "snn_init_ann_path", None)

@@ -14,6 +14,15 @@ from src.utils import fix_seeds, load_args, load_model_parameters, setup_evaluat
 from src.utils_improvements import get_model_params
 
 
+def _disable_geometry_kd_for_eval(model):
+    """Geometry KD is training-only; eval models must not hold a teacher or run KD losses."""
+    model._geometry_teacher = None
+    cfg = getattr(model, "_geometry_cfg", None)
+    if isinstance(cfg, dict):
+        cfg["use_geometry_kd"] = False
+        cfg["use_pairwise_geometry_loss"] = False
+
+
 def get_evaluation(args):
 
     config = load_args(args.load_path_stage_B)
@@ -124,6 +133,8 @@ def get_evaluation(args):
     logging.info(model_A)
 
     model_B = copy.deepcopy(model_A)
+    for m in (model_A, model_B):
+        _disable_geometry_kd_for_eval(m)
 
     # weights_path_stage_A = list(args.load_path_stage_A.glob("*_score.pt"))[0]
     weights_path_stage_A = list(args.load_path_stage_A.glob(f"*_{config.best_model_criterion}.pt"))[0]
