@@ -46,6 +46,14 @@ snn_beta: 0.9
 snn_threshold: 1.0
 # Optional: path to ANN .pt (e.g. .../ClipClap_model_score_ckpt_14.pt) to copy fused Linear weights into SNN; leave unset for random init
 # snn_init_ann_path: null
+# Geometry-preserving KD (SNN student, frozen ANN teacher); requires model_backend: snn + ANN ckpt
+use_geometry_kd: false
+# teacher_ann_path: null   # optional; defaults to snn_init_ann_path
+use_pairwise_geometry_loss: false
+lambda_av_kd: 0.5
+lambda_txt_kd: 0.5
+lambda_pair_av: 0.1
+lambda_pair_txt: 0.1
 decoder_dropout: 0.1 # dropout for output embedding layers O_proj and D_o
 decoder_hidden_size: 512 # hidden size of O_proj and D_o
 additional_dropout: 0.1  # dropout for word label embedding layers W_proj and D_w

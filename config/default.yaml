@@ -60,19 +60,12 @@ model_backend: ann
 snn_num_steps: 10
 snn_beta: 0.9
 snn_threshold: 1.0
-
-# Calibrated stacking (GZSL): see calibration_mode and calibration_combined_beta_strategy
-use_calibrated_stacking: true
-calibration_mode: beta
-calibration_combined_beta_strategy: legacy_average
-calibration_beta_start: 0.0
-calibration_beta_end: 5.0
-calibration_beta_steps: 76
-calibration_tau_start: 0.5
-calibration_tau_end: 2.0
-calibration_tau_steps: 16
-calibration_eval_save_json: true
-
+use_geometry_kd: false
+use_pairwise_geometry_loss: false
+lambda_av_kd: 0.5
+lambda_txt_kd: 0.5
+lambda_pair_av: 0.1
+lambda_pair_txt: 0.1
 perceiver: false
 attention_fusion: false
 ale: False

@@ -56,6 +56,14 @@ def add_logs_tensorboard(batch_loss_details, writer, batch_idx, step, which_stag
     writer.add_scalar(f"Loss/loss_reg_"+which_stage, batch_loss_details['Loss/loss_reg']/(batch_idx), step)
     writer.add_scalar(f"Loss/loss_cmd_rec_"+which_stage, batch_loss_details['Loss/loss_cmd_rec']/(batch_idx), step)
     writer.add_scalar(f"Loss/cross_entropy_"+which_stage, batch_loss_details['Loss/cross_entropy']/(batch_idx), step)
+    for k in (
+        "Loss/geometry_av_kd",
+        "Loss/geometry_txt_kd",
+        "Loss/geometry_pair_av",
+        "Loss/geometry_pair_txt",
+    ):
+        if k in batch_loss_details:
+            writer.add_scalar(k + "_" + which_stage, batch_loss_details[k] / batch_idx, step)
 
 
 def train_step(data_loader, model, criterion, optimizer, epoch, epochs, writer, device, metrics, stats,  args):
