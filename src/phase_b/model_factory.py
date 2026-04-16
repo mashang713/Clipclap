@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch.nn as nn
+import torch.optim as optim
 
 from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint
 from src.utils_improvements import get_model_params
@@ -85,7 +86,20 @@ def build_clipclap_phase_b_wrapped(args, device: str | None = None) -> nn.Module
         beta=args.snn_beta,
         threshold=args.snn_threshold,
     ).to(dev)
-    return ClipClapPhaseB_AudioWrapper(inner, fe)
+    wrapped = ClipClapPhaseB_AudioWrapper(inner, fe)
+    # Inner ClipClap_model builds Adam on self.parameters() only; the wrapper's frontend
+    # was never optimized, so dummy vs mel could yield similarly useless heads. Train both.
+    if not getattr(inner, "is_sam_optim", False):
+        inner.optimizer_gen = optim.Adam(
+            list(inner.parameters()) + list(fe.parameters()),
+            lr=inner.lr,
+            weight_decay=1e-5,
+        )
+        if getattr(inner, "lr_scheduler", False):
+            inner.scheduler_learning_rate = optim.lr_scheduler.ReduceLROnPlateau(
+                inner.optimizer_gen, "max", patience=3, verbose=True
+            )
+    return wrapped
 
 
 def resolve_phase_b_audio_source(args) -> PhaseBAudioSource:
