@@ -60,12 +60,6 @@ model_backend: ann
 snn_num_steps: 10
 snn_beta: 0.9
 snn_threshold: 1.0
-use_geometry_kd: false
-use_pairwise_geometry_loss: false
-lambda_av_kd: 0.5
-lambda_txt_kd: 0.5
-lambda_pair_av: 0.1
-lambda_pair_txt: 0.1
 perceiver: false
 attention_fusion: false
 ale: False

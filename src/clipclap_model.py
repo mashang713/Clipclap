@@ -247,87 +247,6 @@ def init_snn_clipclap_from_ann_checkpoint(
         torch.cuda.empty_cache()
     print("init_snn_from_ann: copied fused Linear weights from ANN checkpoint into SNN modules.")
 
-
-def build_ann_teacher_from_checkpoint(
-    model_params: dict,
-    checkpoint_path,
-    device,
-    input_size_audio,
-    input_size_video,
-):
-    """
-    Load a frozen ANN ClipClap_model for geometry / embedding distillation (teacher).
-    """
-    if checkpoint_path is None:
-        raise ValueError("teacher checkpoint path is None")
-    path = str(checkpoint_path)
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"teacher_ann_path not found: {path}")
-
-    ann_params = dict(model_params)
-    ann_params["model_backend"] = "ann"
-    ann_params["snn_embedding_kwargs"] = {}
-    teacher = ClipClap_model(ann_params, input_size_audio, input_size_video)
-
-    ckpt = torch.load(path, map_location=device)
-    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
-    new_state = {}
-    for k, v in state.items():
-        nk = k.replace("module.", "", 1) if k.startswith("module.") else k
-        new_state[nk] = v
-    missing, unexpected = teacher.load_state_dict(new_state, strict=False)
-    if missing:
-        print(f"ann_teacher: missing keys ({len(missing)}): {missing[:12]}")
-    if unexpected:
-        print(f"ann_teacher: unexpected keys ({len(unexpected)}): {unexpected[:12]}")
-
-    teacher.eval()
-    for p in teacher.parameters():
-        p.requires_grad = False
-    teacher.to(device)
-    return teacher
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 class ClipClap_model(nn.Module):
     def __init__(self, params_model, input_size_audio, input_size_video):
         super(ClipClap_model, self).__init__()
@@ -491,17 +410,6 @@ class ClipClap_model(nn.Module):
         self.MSE_loss = nn.MSELoss()
         print('Done')
 
-        # Geometry-preserving KD (optional; teacher attached in main.py)
-        self._geometry_teacher = None
-        self._geometry_cfg = {
-            "use_geometry_kd": False,
-            "use_pairwise_geometry_loss": False,
-            "lambda_av_kd": 0.5,
-            "lambda_txt_kd": 0.5,
-            "lambda_pair_av": 0.1,
-            "lambda_pair_txt": 0.1,
-        }
-
     def optimize_scheduler(self, value):
         if self.lr_scheduler:
             self.scheduler_learning_rate.step(value)
@@ -555,7 +463,7 @@ class ClipClap_model(nn.Module):
         return output
 
 
-    def compute_loss(self, outputs, embeddings_crossentropy, gt_cross_entropy, geom_teacher_out=None):
+    def compute_loss(self, outputs, embeddings_crossentropy, gt_cross_entropy):
 
         theta_w = outputs['theta_w']
 
@@ -568,12 +476,6 @@ class ClipClap_model(nn.Module):
 
 
         device = theta_w.device
-        cfg = getattr(self, "_geometry_cfg", None) or {}
-        use_geom = (
-            cfg.get("use_geometry_kd", False)
-            and self._use_snn
-            and geom_teacher_out is not None
-        )
 
         if self.cross_entropy_loss==True:
             if self.modality == 'audio':
@@ -613,66 +515,24 @@ class ClipClap_model(nn.Module):
 
         loss_total = l_rec+l_reg+l_ce
 
-        loss_av_kd = torch.tensor(0.0, device=device)
-        loss_txt_kd = torch.tensor(0.0, device=device)
-        loss_pair_av = torch.tensor(0.0, device=device)
-        loss_pair_txt = torch.tensor(0.0, device=device)
-
-        if use_geom:
-            theta_o_ann = geom_teacher_out["theta_o"].detach()
-            theta_w_ann = geom_teacher_out["theta_w"].detach()
-            loss_av_kd = self.MSE_loss(theta_o, theta_o_ann)
-            loss_txt_kd = self.MSE_loss(theta_w, theta_w_ann)
-            lam_av = float(cfg.get("lambda_av_kd", 0.5))
-            lam_txt = float(cfg.get("lambda_txt_kd", 0.5))
-            loss_total = loss_total + lam_av * loss_av_kd + lam_txt * loss_txt_kd
-
-            if cfg.get("use_pairwise_geometry_loss", False):
-                d_o_s = torch.cdist(theta_o, theta_o, p=2)
-                d_o_a = torch.cdist(theta_o_ann, theta_o_ann, p=2)
-                loss_pair_av = self.MSE_loss(d_o_s, d_o_a)
-                d_w_s = torch.cdist(theta_w, theta_w, p=2)
-                d_w_a = torch.cdist(theta_w_ann, theta_w_ann, p=2)
-                loss_pair_txt = self.MSE_loss(d_w_s, d_w_a)
-                lp_av = float(cfg.get("lambda_pair_av", 0.1))
-                lp_txt = float(cfg.get("lambda_pair_txt", 0.1))
-                loss_total = loss_total + lp_av * loss_pair_av + lp_txt * loss_pair_txt
-
         loss_dict = {
             "Loss/total_loss": loss_total.detach().cpu(),
             "Loss/loss_reg": l_reg.detach().cpu(),
             "Loss/loss_cmd_rec": l_rec.detach().cpu(),
             "Loss/cross_entropy": l_ce.detach().cpu(),
-            "Loss/geometry_av_kd": loss_av_kd.detach().cpu(),
-            "Loss/geometry_txt_kd": loss_txt_kd.detach().cpu(),
-            "Loss/geometry_pair_av": loss_pair_av.detach().cpu(),
-            "Loss/geometry_pair_txt": loss_pair_txt.detach().cpu(),
         }
         return loss_total, loss_dict
 
     # cls_numeric = class index
     # cls_embedding = w2v embedding of the target
     def optimize_params(self, audio, video, cls_numeric, cls_embedding, masks, timesteps, embedding_crossentropy, optimize=False):
-        cfg = getattr(self, "_geometry_cfg", None) or {}
-        teacher = getattr(self, "_geometry_teacher", None)
-        geom_teacher_out = None
-        if (
-            self.training
-            and teacher is not None
-            and cfg.get("use_geometry_kd", False)
-            and self._use_snn
-        ):
-            teacher.eval()
-            with torch.no_grad():
-                geom_teacher_out = teacher.forward(audio, video, cls_embedding, masks, timesteps)
-
         if not self.is_sam_optim:
             # Forward pass
             outputs = self.forward(audio, video, cls_embedding, masks, timesteps)
 
             # Backward pass
             loss_numeric, loss = self.compute_loss(
-                outputs, embedding_crossentropy, cls_numeric, geom_teacher_out=geom_teacher_out
+                outputs, embedding_crossentropy, cls_numeric
             )
 
             if optimize == True:
@@ -686,7 +546,7 @@ class ClipClap_model(nn.Module):
             enable_running_stats(self)
             outputs = self.forward(audio, video, cls_embedding, masks, timesteps)
             loss_numeric, loss = self.compute_loss(
-                outputs, embedding_crossentropy, cls_numeric, geom_teacher_out=geom_teacher_out
+                outputs, embedding_crossentropy, cls_numeric
             )
 
             if optimize:
@@ -699,7 +559,7 @@ class ClipClap_model(nn.Module):
                 disable_running_stats(self)
                 outputs_second = self.forward(audio, video, cls_embedding, masks, timesteps)
                 second_loss, _ = self.compute_loss(
-                    outputs_second, embedding_crossentropy, cls_numeric, geom_teacher_out=geom_teacher_out
+                    outputs_second, embedding_crossentropy, cls_numeric
                 )
                 second_loss.backward()
                 self.optimizer_gen.second_step(zero_grad=True)

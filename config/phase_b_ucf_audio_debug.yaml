@@ -1,0 +1,79 @@
+# Phase B-0: short smoke (dummy mel). Copy fields from phase_b_ucf_audio.yaml; trimmed here.
+
+dataset_name: UCF
+feature_extraction_method: cls_features_non_averaged
+input_size_audio: 128
+input_size_video: 4096
+zero_shot_split: cls_split
+selavi: False
+
+batch_seqlen_test: max
+batch_seqlen_test_maxlen: 300
+batch_seqlen_test_trim: center
+batch_seqlen_train: max
+batch_seqlen_train_maxlen: 60
+batch_seqlen_train_trim: random
+bs: 64
+epochs: 1
+eval_bs: 64
+lr: 5.0e-06
+lr_scheduler: true
+n_batches: 15
+eval_num_workers: 8
+optimizer: adam
+data_parallel: false
+best_model_criterion: score
+retrain_all: false
+save_checkpoints: true
+
+rec_loss: true
+reg_loss: true
+cross_entropy_loss: true
+
+debug: true
+debug_comment: 'phase_b_b0_smoke'
+distance_fn: L2Loss
+seed: 42
+verbose: false
+new_model_sequence: true
+eval_name: Attention
+
+modality: audio
+word_embeddings: both
+
+model_backend: snn
+snn_num_steps: 32
+snn_beta: 0.9
+snn_threshold: 1.5
+
+phase_b_audio_source: dummy
+
+decoder_dropout: 0.1
+decoder_hidden_size: 512
+additional_dropout: 0.1
+embeddings_batch_norm: true
+
+transformer_dim: 300
+transformer_depth: 3
+transformer_dropout: 0.3
+transformer_embedding_dim: 64
+transformer_embedding_dropout: 0.2
+transformer_embedding_modality: True
+transformer_heads: 4
+transformer_mlp_dim: 1024
+
+embedding_dropout: 0.3
+embeddings_hidden_size: 512
+transformer_dim_head: 64
+transformer_embedding_time_len: 120
+transformer_embedding_time_embed_type: sinusoid
+transformer_embedding_fourier_scale: 10.0
+transformer_embedding_embed_augment_position: False
+transformer_use_embedding_net: True
+transformer_use_class_token: True
+use_self_attention: False
+use_cross_attention: True
+transformer_average_features: False
+
+audio_only: False
+video_only: False

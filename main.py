@@ -10,11 +10,7 @@ from get_evaluation import get_evaluation
 from src.dataset import ActivityNetDataset, AudioSetZSLDataset, ContrastiveDataset, VGGSoundDataset, UCFDataset
 from src.dataset import DefaultCollator
 from src.metrics import DetailedLosses, MeanClassAccuracy, PercentOverlappingClasses, TargetDifficulty
-from src.clipclap_model import (
-    build_clipclap_model,
-    build_ann_teacher_from_checkpoint,
-    init_snn_clipclap_from_ann_checkpoint,
-)
+from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint
 from src.sampler import SamplerFactory
 from src.train import train
 from src.loss import L2Loss
@@ -261,33 +257,6 @@ def main(args):
         )
         logger.info("SNN Linear layers initialized from ANN checkpoint: %s", args.snn_init_ann_path)
 
-    model._geometry_cfg = {
-        "use_geometry_kd": bool(getattr(args, "use_geometry_kd", False)),
-        "use_pairwise_geometry_loss": bool(getattr(args, "use_pairwise_geometry_loss", False)),
-        "lambda_av_kd": float(getattr(args, "lambda_av_kd", 0.5)),
-        "lambda_txt_kd": float(getattr(args, "lambda_txt_kd", 0.5)),
-        "lambda_pair_av": float(getattr(args, "lambda_pair_av", 0.1)),
-        "lambda_pair_txt": float(getattr(args, "lambda_pair_txt", 0.1)),
-    }
-    # Frozen teacher is attached only for training; validation uses model.eval() (no teacher forward),
-    # and get_evaluation strips teacher + KD flags so checkpoints load without _geometry_teacher.* noise.
-    model._geometry_teacher = None
-    if getattr(args, "model_backend", "ann") == "snn" and model._geometry_cfg["use_geometry_kd"]:
-        tpath = getattr(args, "teacher_ann_path", None) or getattr(args, "snn_init_ann_path", None)
-        if tpath is None:
-            raise ValueError(
-                "use_geometry_kd requires --teacher_ann_path or --snn_init_ann_path (ANN checkpoint for frozen teacher)"
-            )
-        teacher = build_ann_teacher_from_checkpoint(
-            model_params,
-            tpath,
-            args.device,
-            args.input_size_audio,
-            args.input_size_video,
-        )
-        model._geometry_teacher = teacher
-        logger.info("Geometry KD: frozen ANN teacher loaded from %s", tpath)
-
     distance_fn = getattr(sys.modules[__name__], args.distance_fn)()
     metrics = [
         MeanClassAccuracy(model=model, dataset=(val_all_dataset, final_test_loader), device=args.device, distance_fn=distance_fn,
@@ -297,10 +266,7 @@ def main(args):
 
 
     logger.info(model)
-    logger.info(None)
-    logger.info(None)
-    logger.info(None)
-    logger.info([metric.__class__.__name__ for metric in metrics])
+    logger.info("Metrics: %s", [metric.__class__.__name__ for metric in metrics])
 
 
 

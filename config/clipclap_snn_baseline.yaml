@@ -1,6 +1,6 @@
-# Frozen plain-SNN baseline: single-path snntorch Leaky LIF (no OAT, no AIF).
-# Use: python main.py -c config/clipclap_snn_baseline.yaml --root_dir <...> [other CLI flags]
-# Hyperparameters: snn_num_steps=32, snn_beta=0.9, snn_threshold=1.5, lr=5e-6, epochs=1
+# Phase A — canonical SNN-head baseline (offline CLIP/CLAP features → SNN ClipClap head only).
+# No geometry-KD / no teacher. See docs/PHASE_A_BASELINE.md for the exact repro command.
+# Hyperparameters: snn_num_steps=32, snn_beta=0.9, snn_threshold=1.5, lr=5e-6, epochs=1 (override as needed)
 
 # dataset settings
 dataset_name: UCF
@@ -48,14 +48,7 @@ model_backend: snn
 snn_num_steps: 32
 snn_beta: 0.9
 snn_threshold: 1.5
-# Optional: path to ANN .pt (e.g. .../ClipClap_model_score_ckpt_14.pt) to copy fused Linear weights into SNN; leave unset for random init
-# snn_init_ann_path: null
-use_geometry_kd: false
-use_pairwise_geometry_loss: false
-lambda_av_kd: 0.5
-lambda_txt_kd: 0.5
-lambda_pair_av: 0.1
-lambda_pair_txt: 0.1
+# Optional: pass --snn_init_ann_path on CLI to copy fused Linear weights from a trained ANN ckpt into SNN
 decoder_dropout: 0.1 # dropout for output embedding layers O_proj and D_o
 decoder_hidden_size: 512 # hidden size of O_proj and D_o
 additional_dropout: 0.1  # dropout for word label embedding layers W_proj and D_w
