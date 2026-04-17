@@ -27,6 +27,10 @@ def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, e
 
         best_score, best_epoch = check_best_score(epoch, best_score, best_epoch, val_hm, model, optimizer, log_dir, args)
 
+        flush_diag = getattr(model, "flush_frontend_diag", None)
+        if callable(flush_diag):
+            flush_diag()
+
         if args.save_checkpoints:
             # save_best_model(epoch, val_loss, model, optimizer, log_dir / "checkpoints", metric="loss", checkpoint=True)
             save_best_model(epoch, val_hm, model, optimizer, log_dir / "checkpoints", args, metric=args.best_model_criterion, checkpoint=True)

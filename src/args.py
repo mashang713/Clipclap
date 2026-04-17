@@ -441,6 +441,23 @@ def args_main(*args, **kwargs):
         choices=["dummy", "offline_as_mel"],
         default="offline_as_mel",
     )
+    model_group.add_argument(
+        "--phase_b_audio_input_scale",
+        help="Phase B: multiply pooled mel-flat before SNN frontend (working-point tuning)",
+        type=float,
+        default=1.0,
+    )
+    model_group.add_argument(
+        "--phase_b_frontend_diag",
+        help="Phase B: log aggregated SNN frontend firing stats (train only, rate-limited)",
+        type=str_to_bool, nargs="?", const=True, default=False,
+    )
+    model_group.add_argument(
+        "--phase_b_diag_log_interval",
+        help="Phase B frontend: emit aggregated spike stats every N training forwards",
+        type=int,
+        default=50,
+    )
 
     model_group.add_argument(
         "--perceiver",

@@ -25,10 +25,15 @@ class ClipClapPhaseB_AudioWrapper(nn.Module):
     Inner: existing ``ClipClap_model`` (audio branch, SNN or ANN).
     """
 
-    def __init__(self, inner: nn.Module, frontend: nn.Module):
+    def __init__(self, inner: nn.Module, frontend: nn.Module, audio_input_scale: float = 1.0):
         super().__init__()
         self.inner = inner
         self.frontend = frontend
+        self.register_buffer(
+            "_audio_input_scale",
+            torch.tensor(float(audio_input_scale), dtype=torch.float32),
+            persistent=True,
+        )
 
     @property
     def optimizer_gen(self):
@@ -36,7 +41,14 @@ class ClipClapPhaseB_AudioWrapper(nn.Module):
 
     def _encode_audio(self, a: torch.Tensor) -> torch.Tensor:
         a = _pool_audio_batch(a)
+        s = self._audio_input_scale.to(device=a.device, dtype=a.dtype)
+        a = a * s
         return self.frontend(a)
+
+    def flush_frontend_diag(self) -> None:
+        fe = getattr(self, "frontend", None)
+        if fe is not None and hasattr(fe, "flush_frontend_diag"):
+            fe.flush_frontend_diag()
 
     def forward(self, a, v, w, masks, timesteps):
         a = self._encode_audio(a)

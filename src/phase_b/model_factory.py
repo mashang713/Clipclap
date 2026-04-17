@@ -85,8 +85,14 @@ def build_clipclap_phase_b_wrapped(args, device: str | None = None) -> nn.Module
         num_steps=min(32, getattr(args, "snn_num_steps", 10)),
         beta=args.snn_beta,
         threshold=args.snn_threshold,
+        collect_frontend_diag=bool(getattr(args, "phase_b_frontend_diag", False)),
+        diag_log_interval=int(getattr(args, "phase_b_diag_log_interval", 50)),
     ).to(dev)
-    wrapped = ClipClapPhaseB_AudioWrapper(inner, fe)
+    wrapped = ClipClapPhaseB_AudioWrapper(
+        inner,
+        fe,
+        audio_input_scale=float(getattr(args, "phase_b_audio_input_scale", 1.0)),
+    )
     # Inner ClipClap_model builds Adam on self.parameters() only; the wrapper's frontend
     # was never optimized, so dummy vs mel could yield similarly useless heads. Train both.
     if not getattr(inner, "is_sam_optim", False):

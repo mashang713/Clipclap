@@ -113,12 +113,12 @@ class SNN_EmbeddingNet(nn.Module):
             self.lif1 = snn.Leaky(**self.lif_kwargs)
             self.dropout1 = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, spike_diag=None):
         if self.hidden_size > 0:
-            return self._forward_two_layer(x)
-        return self._forward_one_layer(x)
+            return self._forward_two_layer(x, spike_diag)
+        return self._forward_one_layer(x, spike_diag)
 
-    def _forward_one_layer(self, x):
+    def _forward_one_layer(self, x, spike_diag=None):
         mem = torch.zeros_like(self.lin1(x))
         spike_sum = torch.zeros_like(mem)
         for _ in range(self.num_steps):
@@ -126,22 +126,44 @@ class SNN_EmbeddingNet(nn.Module):
             spk, mem = self.lif1(cur, mem)
             spk = self.dropout1(spk)
             spike_sum = spike_sum + spk
-        return spike_sum / self.num_steps
+        out = spike_sum / self.num_steps
+        if spike_diag is not None:
+            spike_diag["lif1_mean_firing_rate"] = float(out.mean().detach())
+            spike_diag["lif1_nonzero_frac"] = float((out.detach().abs() > 1e-3).float().mean())
+            spike_diag["lif1_output_mean"] = float(out.mean().detach())
+            spike_diag["lif1_output_std"] = float(out.std().detach())
+            spike_diag["lif1_mem_mean_last"] = float(mem.detach().mean())
+        return out
 
-    def _forward_two_layer(self, x):
+    def _forward_two_layer(self, x, spike_diag=None):
         mem1 = torch.zeros_like(self.lin1(x))
         z = torch.zeros(x.size(0), self.hidden_size, device=x.device, dtype=x.dtype)
         mem2 = torch.zeros_like(self.lin2(z))
         spike_sum = torch.zeros_like(mem2)
+        spk1_acc = torch.zeros(x.size(0), self.hidden_size, device=x.device, dtype=x.dtype)
         for _ in range(self.num_steps):
             cur1 = self.lin1(x)
             spk1, mem1 = self.lif1(cur1, mem1)
             spk1 = self.dropout1(spk1)
+            spk1_acc = spk1_acc + spk1
             cur2 = self.lin2(spk1)
             spk2, mem2 = self.lif2(cur2, mem2)
             spk2 = self.dropout2(spk2)
             spike_sum = spike_sum + spk2
-        return spike_sum / self.num_steps
+        out = spike_sum / self.num_steps
+        if spike_diag is not None:
+            t = float(self.num_steps)
+            r1 = spk1_acc / t
+            spike_diag["input_mean"] = float(x.mean().detach())
+            spike_diag["input_std"] = float(x.std().detach())
+            spike_diag["lif1_mean_firing_rate"] = float(r1.mean().detach())
+            spike_diag["lif1_nonzero_frac"] = float((r1.detach().abs() > 1e-3).float().mean())
+            spike_diag["lif2_mean_firing_rate"] = float(out.mean().detach())
+            spike_diag["lif2_nonzero_frac"] = float((out.detach().abs() > 1e-3).float().mean())
+            spike_diag["lif2_output_mean"] = float(out.mean().detach())
+            spike_diag["lif2_output_std"] = float(out.std().detach())
+            spike_diag["lif2_mem_mean_last"] = float(mem2.detach().mean())
+        return out
 
     def get_embedding(self, x):
         return self.forward(x)
