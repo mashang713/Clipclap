@@ -458,6 +458,12 @@ def args_main(*args, **kwargs):
         type=int,
         default=50,
     )
+    model_group.add_argument(
+        "--phase_b_mel_flat_dim",
+        help="Phase B: flattened mel / offline-audio feature dim; must match ContrastivePhaseBAudio and PhaseBAudioEncoderSNN",
+        type=int,
+        default=4096,
+    )
 
     model_group.add_argument(
         "--perceiver",

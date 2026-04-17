@@ -84,8 +84,9 @@ def run_phase_b_ucf_eval(
     test_dataset = UCFDataset(args=config, dataset_split="test", zero_shot_mode=None)
 
     src = PhaseBAudioSource(getattr(config, "phase_b_audio_source", "offline_as_mel"))
-    contrastive_val = ContrastivePhaseBAudio(val_all_dataset, source=src, mel_flat_dim=4096)
-    contrastive_test = ContrastivePhaseBAudio(test_dataset, source=src, mel_flat_dim=4096)
+    mel_flat_dim = int(getattr(config, "phase_b_mel_flat_dim", 4096))
+    contrastive_val = ContrastivePhaseBAudio(val_all_dataset, source=src, mel_flat_dim=mel_flat_dim)
+    contrastive_test = ContrastivePhaseBAudio(test_dataset, source=src, mel_flat_dim=mel_flat_dim)
 
     if config.selavi:
         collator_test = DefaultCollator(

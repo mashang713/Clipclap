@@ -54,9 +54,10 @@ def run_phase_b_ucf_audio():
     )
 
     src = resolve_phase_b_audio_source(args)
+    mel_flat_dim = int(getattr(args, "phase_b_mel_flat_dim", 4096))
 
-    contrastive_train = ContrastivePhaseBAudio(train_dataset, source=src, mel_flat_dim=4096)
-    contrastive_val = ContrastivePhaseBAudio(val_all_dataset, source=src, mel_flat_dim=4096)
+    contrastive_train = ContrastivePhaseBAudio(train_dataset, source=src, mel_flat_dim=mel_flat_dim)
+    contrastive_val = ContrastivePhaseBAudio(val_all_dataset, source=src, mel_flat_dim=mel_flat_dim)
 
     train_sampler = SamplerFactory(logger).get(
         class_idxs=list(contrastive_train.target_to_indices.values()),

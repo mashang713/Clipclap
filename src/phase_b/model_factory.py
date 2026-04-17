@@ -79,8 +79,9 @@ def build_clipclap_phase_b_wrapped(args, device: str | None = None) -> nn.Module
             args.input_size_video,
         )
 
+    mel_flat_dim = int(getattr(args, "phase_b_mel_flat_dim", 4096))
     fe = PhaseBAudioEncoderSNN(
-        mel_flat_dim=4096,
+        mel_flat_dim=mel_flat_dim,
         out_dim=1024,
         num_steps=min(32, getattr(args, "snn_num_steps", 10)),
         beta=args.snn_beta,
