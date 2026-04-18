@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Phase B entry (UCF, audio-only): raw-shaped mel-flat -> PhaseBAudioEncoderSNN -> existing SNN head.
+Phase B entry (UCF, audio-only): mel-flat -> PhaseBAudioEncoderSNN (v1 or v2) -> existing SNN head.
 
 Does not change main.py or Phase A defaults. Example:
 

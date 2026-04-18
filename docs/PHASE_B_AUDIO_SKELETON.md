@@ -15,7 +15,7 @@ Video Phase B can mirror this later with a separate dataset + frontend.
 | File | Role |
 |------|------|
 | `src/phase_b/__init__.py` | Package exports |
-| `src/phase_b/audio_frontend.py` | `PhaseBAudioEncoderSNN`: mel-flat → **1024-D** (matches `O_enc` input for `modality: audio`) |
+| `src/phase_b/audio_frontend.py` | `PhaseBAudioEncoderSNN` (v1) / `PhaseBAudioEncoderSNN_V2`: mel-flat → **1024-D** (matches `O_enc` input for `modality: audio`) |
 | `src/phase_b/ucf_phase_b_audio_dataset.py` | `ContrastivePhaseBAudio` / `PhaseBAudioSource`, replaces contrastive audio with `(1, 4096)` mel-flat |
 | `src/phase_b/phase_b_audio_model.py` | `ClipClapPhaseB_AudioWrapper`: runs frontend, then existing `ClipClap_model` |
 | `src/phase_b/run_phase_b_ucf_audio.py` | UCF-only runner (not wired to `main.py`) |
@@ -26,7 +26,8 @@ Video Phase B can mirror this later with a separate dataset + frontend.
 
 ## 3. New classes
 
-- **`PhaseBAudioEncoderSNN`**: `SNN_EmbeddingNet(mel_flat_dim → 1024)`.
+- **`PhaseBAudioEncoderSNN` (v1)**: time-mean pool → one `SNN_EmbeddingNet(mel_flat_dim → 1024)`.
+- **`PhaseBAudioEncoderSNN_V2`**: stem `SNN_EmbeddingNet` on each time step, temporal **mean ∥ max**, `LayerNorm`, tail `SNN_EmbeddingNet` → 1024 (wrapper keeps `(B,T,F)` when `phase_b_audio_frontend_version: v2`).
 - **`ClipClapPhaseB_AudioWrapper`**: `optimize_params` / `forward` / `get_embeddings` apply frontend on audio batch, delegate to inner `ClipClap_model`.
 - **`ContrastivePhaseBAudio`** (alias `UCFPhaseBAudioDataset`): subclasses `ContrastiveDataset`; overrides `__getitem__` to replace `audio` only.
 - **`PhaseBAudioSource`**: `dummy` \| `offline_as_mel` (CLI: `--phase_b_audio_source`).
@@ -39,7 +40,9 @@ Video Phase B can mirror this later with a separate dataset + frontend.
 2. `ContrastivePhaseBAudio` samples positive/negative pairs like Phase A.
 3. **Audio only** is replaced by a **4096-D row** (`(1, 4096)` numpy) — from **flattened offline audio** or **Gaussian dummy**.
 4. `DefaultCollator` pads/trims as usual → batch tensor `(B, T, 4096)` (typically `T` set by fixed mode).
-5. **Wrapper** mean-pools time if needed → `(B, 4096)` → **frontend** → `(B, 1024)`.
+5. **Wrapper** → **frontend** → `(B, 1024)`:
+   - **v1**: mean-pool time → `(B, 4096)` (or `phase_b_mel_flat_dim`), apply `phase_b_audio_input_scale`, then `PhaseBAudioEncoderSNN`.
+   - **v2**: keep `(B, T, F)`, apply scale, then `PhaseBAudioEncoderSNN_V2` (temporal aggregation inside the frontend).
 6. Inner **`ClipClap_model`** (`modality: audio`) treats that as `a` → **`O_enc` → `O_proj` / `D_o`**, **`W_enc` → `W_proj` / `D_w`** with **frozen text rows** from pickle (unchanged).
 
 ---
@@ -119,3 +122,21 @@ Use **`--modality audio`** for audio-only Phase A vs Phase B (fairer modality ma
 | Phase B | | | | | |
 
 Use `--phase_b_audio_source dummy` only for B-0 wiring checks; B-1 should use `offline_as_mel`.
+
+---
+
+## 9. Frontend v2 and diagnostics (small matrix)
+
+**Config / CLI**
+
+- `phase_b_audio_frontend_version`: `v1` \| `v2` (default `v1`).
+- `phase_b_frontend_v2_stem_out_dim` (default `512`): stem width; tail sees `2 ×` this after mean ∥ max.
+- `phase_b_frontend_v2_block_hidden` (default `2048`): internal width for each `SNN_EmbeddingNet` block in v2.
+- `phase_b_audio_input_scale` (default `1.0`): applied on the mel-flat **before** the frontend (v1 and v2).
+- `phase_b_frontend_diag`: when true, each **epoch** logs one line of mean firing rate / nonzero fraction per LIF stage (`stem_*` / `tail_*` prefixes for v2; `lif1_*` / `lif2_*` for v1). `phase_b_diag_log_interval` is legacy/unused.
+
+**Suggested A/B (same seeds, lr, threshold, scale, epochs)**
+
+1. v1 + your best-known yaml flags.
+2. v2 + identical flags (`--phase_b_audio_frontend_version v2`).
+3. Optional: v2 + one alternate `phase_b_audio_input_scale` only if (1) vs (2) is ambiguous.

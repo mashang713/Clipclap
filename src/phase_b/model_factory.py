@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch.nn as nn
 import torch.optim as optim
 
 from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint
 from src.utils_improvements import get_model_params
 
-from src.phase_b.audio_frontend import PhaseBAudioEncoderSNN
+from src.phase_b.audio_frontend import PhaseBAudioEncoderSNN, PhaseBAudioEncoderSNN_V2
 from src.phase_b.phase_b_audio_model import ClipClapPhaseB_AudioWrapper
 from src.phase_b.ucf_phase_b_audio_dataset import PhaseBAudioSource
+
+_log = logging.getLogger(__name__)
 
 
 def get_model_params_from_args(args):
@@ -58,7 +62,7 @@ def get_model_params_from_args(args):
 
 def build_clipclap_phase_b_wrapped(args, device: str | None = None) -> nn.Module:
     """
-    Build ``ClipClap_model`` (audio modality) + ``PhaseBAudioEncoderSNN`` wrapper.
+    Build ``ClipClap_model`` (audio modality) + Phase B audio frontend (v1 or v2) + wrapper.
     Optionally init SNN head from ``args.snn_init_ann_path``.
     """
     dev = device or getattr(args, "device", "cpu")
@@ -80,15 +84,39 @@ def build_clipclap_phase_b_wrapped(args, device: str | None = None) -> nn.Module
         )
 
     mel_flat_dim = int(getattr(args, "phase_b_mel_flat_dim", 4096))
-    fe = PhaseBAudioEncoderSNN(
-        mel_flat_dim=mel_flat_dim,
-        out_dim=1024,
-        num_steps=min(32, getattr(args, "snn_num_steps", 10)),
-        beta=args.snn_beta,
-        threshold=args.snn_threshold,
-        collect_frontend_diag=bool(getattr(args, "phase_b_frontend_diag", False)),
-        diag_log_interval=int(getattr(args, "phase_b_diag_log_interval", 50)),
-    ).to(dev)
+    n_steps = min(32, getattr(args, "snn_num_steps", 10))
+    diag = bool(getattr(args, "phase_b_frontend_diag", False))
+    diag_iv = int(getattr(args, "phase_b_diag_log_interval", 50))
+    version = str(getattr(args, "phase_b_audio_frontend_version", "v1")).lower().strip()
+    if version not in ("v1", "v2"):
+        _log.warning("Unknown phase_b_audio_frontend_version=%r; falling back to v1", version)
+        version = "v1"
+
+    if version == "v2":
+        stem_out = int(getattr(args, "phase_b_frontend_v2_stem_out_dim", 512))
+        blk_h = int(getattr(args, "phase_b_frontend_v2_block_hidden", 2048))
+        fe = PhaseBAudioEncoderSNN_V2(
+            mel_flat_dim=mel_flat_dim,
+            out_dim=1024,
+            stem_out_dim=stem_out,
+            stem_hidden=blk_h,
+            tail_hidden=blk_h,
+            num_steps=n_steps,
+            beta=args.snn_beta,
+            threshold=args.snn_threshold,
+            collect_frontend_diag=diag,
+            diag_log_interval=diag_iv,
+        ).to(dev)
+    else:
+        fe = PhaseBAudioEncoderSNN(
+            mel_flat_dim=mel_flat_dim,
+            out_dim=1024,
+            num_steps=n_steps,
+            beta=args.snn_beta,
+            threshold=args.snn_threshold,
+            collect_frontend_diag=diag,
+            diag_log_interval=diag_iv,
+        ).to(dev)
     wrapped = ClipClapPhaseB_AudioWrapper(
         inner,
         fe,

@@ -23,6 +23,9 @@ class ClipClapPhaseB_AudioWrapper(nn.Module):
     """
     Frontend: mel-flat or pooled sequence -> 1024-D.
     Inner: existing ``ClipClap_model`` (audio branch, SNN or ANN).
+
+    If the frontend sets ``phase_b_use_temporal_audio = True`` (v2), keep ``(B, T, F)`` and apply
+    ``phase_b_audio_input_scale`` before the frontend; v1 pools time to ``(B, F)`` first.
     """
 
     def __init__(self, inner: nn.Module, frontend: nn.Module, audio_input_scale: float = 1.0):
@@ -40,7 +43,13 @@ class ClipClapPhaseB_AudioWrapper(nn.Module):
         return self.inner.optimizer_gen
 
     def _encode_audio(self, a: torch.Tensor) -> torch.Tensor:
-        a = _pool_audio_batch(a)
+        if getattr(self.frontend, "phase_b_use_temporal_audio", False):
+            if a.dim() == 2:
+                a = a.unsqueeze(1)
+            elif a.dim() != 3:
+                raise ValueError(f"Expected audio tensor of dim 2 or 3, got shape {tuple(a.shape)}")
+        else:
+            a = _pool_audio_batch(a)
         s = self._audio_input_scale.to(device=a.device, dtype=a.dtype)
         a = a * s
         return self.frontend(a)

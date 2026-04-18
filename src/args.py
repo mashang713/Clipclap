@@ -454,7 +454,7 @@ def args_main(*args, **kwargs):
     )
     model_group.add_argument(
         "--phase_b_diag_log_interval",
-        help="Phase B frontend: emit aggregated spike stats every N training forwards",
+        help="Phase B frontend: legacy knob (unused); firing stats log once per epoch when phase_b_frontend_diag is true",
         type=int,
         default=50,
     )
@@ -463,6 +463,25 @@ def args_main(*args, **kwargs):
         help="Phase B: flattened mel / offline-audio feature dim; must match ContrastivePhaseBAudio and PhaseBAudioEncoderSNN",
         type=int,
         default=4096,
+    )
+    model_group.add_argument(
+        "--phase_b_audio_frontend_version",
+        help="Phase B audio frontend: v1 single SNN_EmbeddingNet after time-mean; v2 stem-per-frame + temporal mean||max + LayerNorm + tail SNN",
+        type=str,
+        choices=["v1", "v2"],
+        default="v1",
+    )
+    model_group.add_argument(
+        "--phase_b_frontend_v2_stem_out_dim",
+        help="Phase B v2 only: stem SNN output width (tail input is 2x this after mean||max)",
+        type=int,
+        default=512,
+    )
+    model_group.add_argument(
+        "--phase_b_frontend_v2_block_hidden",
+        help="Phase B v2 only: SNN_EmbeddingNet internal hidden width for stem and tail blocks",
+        type=int,
+        default=2048,
     )
 
     model_group.add_argument(

@@ -52,6 +52,11 @@ phase_b_audio_source: offline_as_mel
 # Must match offline CLAP audio feat crop (train / model / eval all read this).
 phase_b_mel_flat_dim: 1024
 
+# Audio frontend: v1 (time-mean then one SNN block) or v2 (stem per frame + mean||max + LN + tail SNN)
+phase_b_audio_frontend_version: v1
+phase_b_frontend_v2_stem_out_dim: 512
+phase_b_frontend_v2_block_hidden: 2048
+
 decoder_dropout: 0.1
 decoder_hidden_size: 512
 additional_dropout: 0.1
