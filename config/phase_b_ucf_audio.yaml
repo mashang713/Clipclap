@@ -47,7 +47,8 @@ word_embeddings: both
 model_backend: snn
 snn_num_steps: 32
 snn_beta: 0.9
-snn_threshold: 1.5
+# Mel-flat / CLAP magnitudes are small; 1.5 often silences LIF (flat loss, HM=0). Use ~0.08–0.12 + input_scale sweeps.
+snn_threshold: 0.1
 
 phase_b_audio_source: offline_as_mel
 # Must match offline CLAP audio feat crop (train / model / eval all read this).

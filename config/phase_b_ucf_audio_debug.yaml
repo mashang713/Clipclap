@@ -45,7 +45,7 @@ word_embeddings: both
 model_backend: snn
 snn_num_steps: 32
 snn_beta: 0.9
-snn_threshold: 1.5
+snn_threshold: 0.1
 
 phase_b_audio_source: dummy
 phase_b_mel_flat_dim: 1024

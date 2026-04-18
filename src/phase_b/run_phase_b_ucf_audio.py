@@ -129,6 +129,15 @@ def run_phase_b_ucf_audio():
     )
 
     model = build_clipclap_phase_b_wrapped(args, device=args.device)
+    if getattr(args, "model_backend", "ann") == "snn":
+        thr = float(getattr(args, "snn_threshold", 1.0))
+        src = str(getattr(args, "phase_b_audio_source", "offline_as_mel"))
+        if thr >= 1.0 and src != "dummy":
+            logger.warning(
+                "snn_threshold=%g is often too high for Phase B mel-flat (LIF may not fire → constant "
+                "embeddings and flat train/val loss). Try --snn_threshold 0.1 (or 0.08–0.12 from your sweep).",
+                thr,
+            )
     if getattr(args, "model_backend", "ann") == "snn" and getattr(args, "snn_init_ann_path", None):
         logger.info("SNN head init from ANN checkpoint: %s", args.snn_init_ann_path)
 
