@@ -299,15 +299,27 @@ def evaluate_dataset_baseline(dataset_tuple, model, device, distance_fn, best_be
     a_p, v_p, t_p = outputs_all
     # a_p = None
 
-
-    video_evaluation = get_best_evaluation(dataset, data_num, a_p, v_p, t_p, mode="video", device=device,
-                                           distance_fn=distance_fn, best_beta=best_beta, save_performances=save_performances,args=args)
-
+    eval_mode = getattr(args, "eval_modality", "video") if args is not None else "video"
+    if eval_mode not in ("audio", "video", "both"):
+        eval_mode = "video"
+    modality_eval = get_best_evaluation(
+        dataset,
+        data_num,
+        a_p,
+        v_p,
+        t_p,
+        mode=eval_mode,
+        device=device,
+        distance_fn=distance_fn,
+        best_beta=best_beta,
+        save_performances=save_performances,
+        args=args,
+    )
 
     return {
-        "audio": video_evaluation,
-        "video": video_evaluation,
-        "both": video_evaluation
+        "audio": modality_eval,
+        "video": modality_eval,
+        "both": modality_eval,
     }
 
 def get_best_evaluation(dataset, targets, a_p, v_p, t_p, mode, device, distance_fn, best_beta=None, save_performances=False, args=None, attention_weights=None):

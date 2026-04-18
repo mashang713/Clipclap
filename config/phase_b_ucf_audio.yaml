@@ -41,6 +41,7 @@ eval_name: Attention
 
 # audio-only Phase B
 modality: audio
+eval_modality: audio
 word_embeddings: both
 
 model_backend: snn

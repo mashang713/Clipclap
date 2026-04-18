@@ -30,6 +30,14 @@ def run_phase_b_ucf_audio():
         logging.warning("Overriding modality to 'audio' for Phase B.")
         args.modality = "audio"
 
+    # GZSL stacking in utils.evaluate_dataset_baseline follows eval_modality; default argparse is "video".
+    if getattr(args, "eval_modality", "video") != "audio":
+        logging.warning(
+            "Phase B is audio-only: forcing eval_modality=audio (was %r).",
+            getattr(args, "eval_modality", None),
+        )
+    args.eval_modality = "audio"
+
     if args.input_size is not None:
         args.input_size_audio = args.input_size
         args.input_size_video = args.input_size

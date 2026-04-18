@@ -39,6 +39,7 @@ new_model_sequence: true
 eval_name: Attention
 
 modality: audio
+eval_modality: audio
 word_embeddings: both
 
 model_backend: snn

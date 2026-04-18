@@ -53,6 +53,13 @@ def run_phase_b_ucf_eval(
     if getattr(config, "modality", None) != "audio":
         logging.warning("Phase B eval expects modality=audio; got %s", getattr(config, "modality", None))
 
+    if getattr(config, "eval_modality", "video") != "audio":
+        logging.warning(
+            "Phase B eval: forcing eval_modality=audio (args.pkl had %r).",
+            getattr(config, "eval_modality", None),
+        )
+        config.eval_modality = "audio"
+
     if config.input_size is not None:
         config.input_size_audio = config.input_size
         config.input_size_video = config.input_size
