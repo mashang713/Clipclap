@@ -4,6 +4,8 @@ import copy
 import torch
 
 from pathlib import Path
+
+from src.ablation_results import append_results_ablation_csv
 from src.dataset import DefaultCollator
 from src.args import args_main
 from torch.utils import data
@@ -21,6 +23,8 @@ def get_evaluation(args):
     if config.input_size is not None:
         config.input_size_audio = config.input_size
         config.input_size_video = config.input_size
+    if getattr(args, "eval_modality", None) is not None:
+        config.eval_modality = args.eval_modality
 
     assert config.retrain_all, f"--retrain_all flag is not set in load_path_stage_B. Are you sure this is the correct path?. {args.load_path_stage_B}"
     fix_seeds(config.seed)
@@ -159,6 +163,24 @@ def get_evaluation(args):
 
     # Tensorboard HParam logging
     log_hparams(tb_writer, config, results['both'])
+
+    csv_path = getattr(args, "ablation_csv", None)
+    if csv_path is None:
+        csv_path = Path(__file__).resolve().parent / "results_ablation.csv"
+    else:
+        csv_path = Path(csv_path)
+    run_label = (getattr(config, "ablation_run_name", "") or "").strip()
+    if not run_label:
+        run_label = (getattr(config, "exp_name", "") or "unnamed").strip()
+    append_results_ablation_csv(
+        csv_path,
+        run_name=run_label,
+        config=config,
+        results_both=results["both"],
+        final_checkpoint_path=weights_path_stage_B,
+        log_dir_for_tb=Path(args.load_path_stage_B),
+    )
+    logger.info("Appended ablation row to %s", csv_path.resolve())
 
     logger.info("FINISHED")
     # return results['both']

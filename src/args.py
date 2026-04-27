@@ -79,6 +79,13 @@ def args_main(*args, **kwargs):
     )
 
     parser.add_argument(
+        "--run_name",
+        help="Short label for ablation (stored in args.pkl, used for results_ablation.csv).",
+        type=str,
+        default="",
+    )
+
+    parser.add_argument(
         "--feature_extraction_method",
         help="Name of folder containing respective extracted features. Has to match {feature_extraction_method} in --root_dir argument.",
         required=False,
@@ -167,6 +174,13 @@ def args_main(*args, **kwargs):
         "--epochs",
         help="Number of epochs",
         type=int
+    )
+    parser.add_argument(
+        "--stage2_epochs_override",
+        help="If set, stage-2 (retrain_all) always trains this many epochs. "
+        "If None, stage-2 epochs = best_epoch+1 from stage-1. Use a fixed int for fair ablations.",
+        type=int,
+        default=None,
     )
 
     parser.add_argument(
@@ -689,6 +703,18 @@ def args_main(*args, **kwargs):
         "--eval_save_performances",
         help="Save class performances to disk",
         type=str_to_bool, nargs='?', const=True
+    )
+    eval_group.add_argument(
+        "--ablation_csv",
+        help="Path to results_ablation.csv to append (default: <repo>/results_ablation.csv).",
+        type=pathlib.Path,
+        default=None,
+    )
+    eval_group.add_argument(
+        "--ablation_run_name",
+        help="Short label for the ablation row in results_ablation.csv (e.g. ann_budget_baseline).",
+        type=str,
+        default="",
     )
     args = parser.parse_args(*args, **kwargs)
 

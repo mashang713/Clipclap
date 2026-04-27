@@ -1,4 +1,5 @@
 import sys
+import logging
 import torch
 from torch import optim
 
@@ -37,12 +38,35 @@ def run():
         # set stage-2 args if not yet set
         args.retrain_all = True
         args.save_checkpoints = True
-        print('best_epoch after stage1: ', best_epoch)
-
+        _log = logging.getLogger("clipclap")
+        stage1_epochs_snapshot = args.epochs
+        override = getattr(args, "stage2_epochs_override", None)
+        print("best_epoch after stage1: ", best_epoch)
+        st2 = None
         if best_epoch is not None:
-            # train stage-2 only for required epochs
-            args.epochs = best_epoch + 1
-        print('args.epochs after stage1: ', args.epochs)
+            if override is not None:
+                st2 = int(override)
+            else:
+                st2 = int(best_epoch) + 1
+            args.epochs = st2
+        # Persist for args.pkl and results_ablation.csv (公平消融预算)
+        args.ablation_stage1_epochs = stage1_epochs_snapshot
+        args.ablation_best_epoch = best_epoch
+        if st2 is not None:
+            args.ablation_stage2_epochs = st2
+        else:
+            args.ablation_stage2_epochs = args.epochs
+        _log.info(
+            "best_epoch=%r stage2_epochs=%r stage2_epochs_override=%r",
+            best_epoch,
+            args.ablation_stage2_epochs,
+            override,
+        )
+        print(
+            f"best_epoch={best_epoch!r} stage2_epochs={args.ablation_stage2_epochs!r} "
+            f"stage2_epochs_override={override!r}"
+        )
+        print("args.epochs (stage-2): ", args.epochs)
 
         path_stage_2, _ = main(args)
         eval_args.load_path_stage_B = path_stage_2
