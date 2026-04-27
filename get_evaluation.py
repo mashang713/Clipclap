@@ -114,6 +114,12 @@ def get_evaluation(args):
         getattr(config, "snn_num_steps", 10),
         getattr(config, "snn_beta", 0.9),
         getattr(config, "snn_threshold", 1.0),
+        getattr(config, "use_snn_conversion", False),
+        getattr(config, "snn_timesteps", 4),
+        getattr(config, "lambda_proto", 1.0),
+        getattr(config, "lambda_feat", 1.0),
+        getattr(config, "proto_temperature", 1.0),
+        getattr(config, "snn_conv_threshold_percentile", 0.99),
     )
 
     if config.new_model_sequence==True:

@@ -236,6 +236,12 @@ def main(args):
         getattr(args, "snn_num_steps", 10),
         getattr(args, "snn_beta", 0.9),
         getattr(args, "snn_threshold", 1.0),
+        getattr(args, "use_snn_conversion", False),
+        getattr(args, "snn_timesteps", 4),
+        getattr(args, "lambda_proto", 1.0),
+        getattr(args, "lambda_feat", 1.0),
+        getattr(args, "proto_temperature", 1.0),
+        getattr(args, "snn_conv_threshold_percentile", 0.99),
     )
     if args.new_model_sequence==True:
         model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)

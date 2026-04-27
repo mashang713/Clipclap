@@ -56,6 +56,13 @@ def get_model_params(
     snn_num_steps=10,
     snn_beta=0.9,
     snn_threshold=1.0,
+    # Prototype-preserving fake-SNN conversion (ANN teacher detached)
+    use_snn_conversion=False,
+    snn_timesteps=4,
+    lambda_proto=0.5,
+    lambda_feat=0.1,
+    proto_temperature=2.0,
+    snn_conv_threshold_percentile=0.99,
     ):
 
     params_model = dict()
@@ -118,4 +125,12 @@ def get_model_params(
         }
     else:
         params_model["snn_embedding_kwargs"] = {}
+
+    # Fake-SNN conversion + prototype-preserving losses (kept independent from true SNN backend).
+    params_model["use_snn_conversion"] = bool(use_snn_conversion)
+    params_model["snn_timesteps"] = int(snn_timesteps)
+    params_model["lambda_proto"] = float(lambda_proto)
+    params_model["lambda_feat"] = float(lambda_feat)
+    params_model["proto_temperature"] = float(proto_temperature)
+    params_model["snn_conv_threshold_percentile"] = float(snn_conv_threshold_percentile)
     return params_model

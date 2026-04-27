@@ -51,11 +51,40 @@ def add_loss_details(current_loss_details, batch_loss_details):
 
 def add_logs_tensorboard(batch_loss_details, writer, batch_idx, step, which_stage):
 
-
     writer.add_scalar(f"Loss/total_loss_"+which_stage, batch_loss_details['Loss/total_loss']/(batch_idx), step)
+    if 'Loss/original_loss' in batch_loss_details:
+        writer.add_scalar(f"Loss/original_loss_"+which_stage, batch_loss_details['Loss/original_loss']/(batch_idx), step)
     writer.add_scalar(f"Loss/loss_reg_"+which_stage, batch_loss_details['Loss/loss_reg']/(batch_idx), step)
     writer.add_scalar(f"Loss/loss_cmd_rec_"+which_stage, batch_loss_details['Loss/loss_cmd_rec']/(batch_idx), step)
     writer.add_scalar(f"Loss/cross_entropy_"+which_stage, batch_loss_details['Loss/cross_entropy']/(batch_idx), step)
+    if 'Loss/proto_kd' in batch_loss_details:
+        writer.add_scalar(f"Loss/proto_kd_"+which_stage, batch_loss_details['Loss/proto_kd']/(batch_idx), step)
+    if 'Loss/feature_mse' in batch_loss_details:
+        writer.add_scalar(f"Loss/feature_mse_"+which_stage, batch_loss_details['Loss/feature_mse']/(batch_idx), step)
+    if 'Diag/proto_topk_overlap' in batch_loss_details:
+        writer.add_scalar(
+            f"Diag/proto_topk_overlap_"+which_stage,
+            batch_loss_details['Diag/proto_topk_overlap']/(batch_idx),
+            step,
+        )
+    if 'Diag/proto_top1_agree' in batch_loss_details:
+        writer.add_scalar(
+            f"Diag/proto_top1_agree_"+which_stage,
+            batch_loss_details['Diag/proto_top1_agree']/(batch_idx),
+            step,
+        )
+    for k in (
+        "Diag/theta_o_mean",
+        "Diag/theta_o_std",
+        "Diag/theta_o_min",
+        "Diag/theta_o_max",
+        "Diag/theta_o_negative_ratio",
+        "Diag/snn_clip_ratio",
+        "Diag/snn_zero_ratio",
+        "Diag/proto_top1_agree",
+    ):
+        if k in batch_loss_details:
+            writer.add_scalar(f"{k}_{which_stage}", batch_loss_details[k] / (batch_idx), step)
 
 
 def train_step(data_loader, model, criterion, optimizer, epoch, epochs, writer, device, metrics, stats,  args):
@@ -133,12 +162,19 @@ def train_step(data_loader, model, criterion, optimizer, epoch, epochs, writer, 
 
     add_logs_tensorboard(batch_loss_details, writer, (batch_idx + 1) ,len(data_loader) * (epoch + 1),"train")
 
-
     logger.info(
         f"TRAIN\t"
         f"Epoch: {epoch}/{epochs}\t"
         f"Iteration: {iteration}\t"
         f"Loss: {batch_loss:.4f}\t"
+        + (
+            f"theta_mean={batch_loss_details.get('Diag/theta_o_mean', 0.0)/(batch_idx+1):.4g}\t"
+            f"theta_std={batch_loss_details.get('Diag/theta_o_std', 0.0)/(batch_idx+1):.4g}\t"
+            f"theta_min={batch_loss_details.get('Diag/theta_o_min', 0.0)/(batch_idx+1):.4g}\t"
+            f"theta_max={batch_loss_details.get('Diag/theta_o_max', 0.0)/(batch_idx+1):.4g}\t"
+            f"theta_neg={batch_loss_details.get('Diag/theta_o_negative_ratio', 0.0)/(batch_idx+1):.4g}\t"
+            if 'Diag/theta_o_mean' in batch_loss_details else ""
+        )
     )
     return batch_loss
 
@@ -242,6 +278,14 @@ def val_step(data_loader, model, criterion, epoch, epochs, writer, device, metri
             f"ZSL score: {zsl_score:.4f}\t"
             f"Seen score: {seen_score:.4f}\t"
             f"Unseen score:{unseen_score:.4f}\t"
-            f"HM: {hm_score:.4f}"
+            f"HM: {hm_score:.4f}\t"
+            + (
+                f"theta_mean={batch_loss_details.get('Diag/theta_o_mean', 0.0)/(batch_idx+1):.4g}\t"
+                f"theta_std={batch_loss_details.get('Diag/theta_o_std', 0.0)/(batch_idx+1):.4g}\t"
+                f"theta_neg={batch_loss_details.get('Diag/theta_o_negative_ratio', 0.0)/(batch_idx+1):.4g}\t"
+                f"clip={batch_loss_details.get('Diag/snn_clip_ratio', 0.0)/(batch_idx+1):.4g}\t"
+                f"zero={batch_loss_details.get('Diag/snn_zero_ratio', 0.0)/(batch_idx+1):.4g}"
+                if 'Diag/theta_o_mean' in batch_loss_details else ""
+            )
         )
     return batch_loss, hm_score

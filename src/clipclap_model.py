@@ -23,6 +23,40 @@ except ImportError:  # optional until user runs: pip install snntorch
     snn_surrogate = None
 
 torch.set_printoptions(threshold=10_000)
+
+
+class FakeSNNConversion(nn.Module):
+    """
+    Minimal fake-SNN conversion for prototype-preserving ANN2SNN.
+
+    Approximates low-step firing-rate quantization:
+      x_clip = clamp(x, 0, threshold)
+      x_snn  = round(x_clip / threshold * T) / T * threshold
+    """
+
+    def __init__(self, timesteps: int = 4):
+        super().__init__()
+        self.timesteps = int(max(1, timesteps))
+
+    def quantize(self, x_detached: torch.Tensor, threshold: torch.Tensor, *, signed: bool) -> torch.Tensor:
+        """
+        Quantize a detached tensor into a low-step firing-rate approximation.
+        This function is intentionally non-differentiable; use STE in the caller.
+        """
+        thr = torch.clamp(threshold, min=1e-8).to(dtype=x_detached.dtype, device=x_detached.device)
+        t = float(self.timesteps)
+        if signed:
+            x_clip = torch.clamp(x_detached, -thr, thr)
+            x_q = torch.round(((x_clip + thr) / (2.0 * thr)) * t)
+            x_q = torch.clamp(x_q, 0.0, t)
+            return (x_q / t) * (2.0 * thr) - thr
+        x_clip = torch.clamp(x_detached, 0.0, thr)
+        x_q = torch.round((x_clip / thr) * t) / t
+        return x_q * thr
+
+    def ste(self, x: torch.Tensor, x_quant_detached: torch.Tensor) -> torch.Tensor:
+        """Straight-through estimator: forward uses quantized, backward uses identity."""
+        return x + (x_quant_detached - x).detach()
 def disable_running_stats(model):
     def _disable(module):
         if isinstance(module, nn.BatchNorm1d):
@@ -434,14 +468,18 @@ class ClipClap_model(nn.Module):
                 lr=self.lr, weight_decay=1e-5
             )
             if self.lr_scheduler:
-                self.scheduler_learning_rate =  optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_gen, 'max', patience=3, verbose=True)
+                self.scheduler_learning_rate = optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer_gen, 'max', patience=3
+                )
 
         elif optimizer == 'adam-sam':
             self.optimizer_gen = SAM(self.parameters(), optim.Adam, lr=self.lr, weight_decay=1e-5)
             self.is_sam_optim = True
             if self.lr_scheduler:
                 # lr scheduling on base optimizer
-                self.scheduler_learning_rate =  optim.lr_scheduler.ReduceLROnPlateau(self.optimizer_gen.base_optimizer, 'max', patience=3, verbose=True)
+                self.scheduler_learning_rate = optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer_gen.base_optimizer, 'max', patience=3
+                )
         else:
             raise NotImplementedError
 
@@ -453,6 +491,15 @@ class ClipClap_model(nn.Module):
         self.criterion_cls = nn.CrossEntropyLoss()
         self.MSE_loss = nn.MSELoss()
         print('Done')
+
+        # Prototype-preserving fake-SNN conversion (independent from true SNN backend).
+        self.use_snn_conversion = bool(params_model.get("use_snn_conversion", False))
+        self.snn_timesteps = int(params_model.get("snn_timesteps", 4))
+        self.lambda_proto = float(params_model.get("lambda_proto", 1.0))
+        self.lambda_feat = float(params_model.get("lambda_feat", 1.0))
+        self.proto_temperature = float(params_model.get("proto_temperature", 1.0))
+        self.snn_conv_threshold_percentile = float(params_model.get("snn_conv_threshold_percentile", 0.99))
+        self.fake_snn = FakeSNNConversion(timesteps=self.snn_timesteps)
 
     def optimize_scheduler(self, value):
         if self.lr_scheduler:
@@ -521,7 +568,17 @@ class ClipClap_model(nn.Module):
 
         device = theta_w.device
 
-        if self.cross_entropy_loss==True:
+        theta_det = theta_o.detach()
+        # theta_o distribution diagnostics (always log; fused embedding stats). Must be based on detached theta_o.
+        theta_mean = theta_det.mean()
+        theta_std = theta_det.std(unbiased=False)
+        theta_min = theta_det.min()
+        theta_max = theta_det.max()
+        theta_neg_ratio = (theta_det < 0).float().mean()
+
+        # Class prototypes (continuous) used for CE and/or prototype-preserving loss.
+        embedding_cross_entropy = None
+        if embeddings_crossentropy is not None:
             if self.modality == 'audio':
                 embeddings_crossentropy = embeddings_crossentropy[:,512:]
             elif self.modality == 'video':
@@ -531,10 +588,31 @@ class ClipClap_model(nn.Module):
                     embeddings_crossentropy = embeddings_crossentropy[:,512:]
                 elif self.word_embeddings == 'clip':
                     embeddings_crossentropy = embeddings_crossentropy[:,:512]
+            embedding_cross_entropy = self.W_proj(self.W_enc(embeddings_crossentropy))
 
-            embedding_cross_entropy=self.W_proj(self.W_enc(embeddings_crossentropy))
+        # Fake-SNN student embedding (fused-only). Teacher is detached theta_o.
+        z_av_ann = theta_det
+        z_av_snn = None
+        if self.use_snn_conversion and embeddings_crossentropy is not None:
+            q = float(min(1.0, max(0.5, self.snn_conv_threshold_percentile)))
+            thr = torch.quantile(z_av_ann.abs().reshape(-1), q).detach()
+            signed = bool(float(theta_neg_ratio.detach()) > 0.1)
+            x_quant = self.fake_snn.quantize(theta_det, threshold=thr, signed=signed)
+            z_av_snn = self.fake_snn.ste(theta_o, x_quant)
+            # fake-SNN diagnostics (must be based on detached teacher / detached quantized)
+            snn_clip_ratio = (theta_det.abs() > thr).float().mean()
+            snn_zero_ratio = (x_quant.abs() < 1e-6).float().mean()
+        else:
+            thr = torch.tensor(0.0, device=device)
+            snn_clip_ratio = torch.tensor(0.0, device=device)
+            snn_zero_ratio = torch.tensor(0.0, device=device)
+
+        # When use_snn_conversion is enabled, use z_av_snn for prediction/metrics.
+        z_for_pred = z_av_snn if (self.use_snn_conversion and z_av_snn is not None) else theta_o
+
+        if self.cross_entropy_loss==True:
             Cross_loss=nn.CrossEntropyLoss()
-            scores=torch.matmul(theta_o, embedding_cross_entropy.t()) # (bs, 64) x (K_seen, 64).T = (bs, 64) x (64, K_seen) = (bs, K_seen)
+            scores=torch.matmul(z_for_pred, embedding_cross_entropy.t()) # (bs, 64) x (K_seen, 64).T = (bs, K_seen)
             # gt_cross_entropy = [1, 3, 2, 55, 97, 45, ...] list of gt class labels -> shape (bs,)
             l_ce=Cross_loss(scores, gt_cross_entropy)
         else:
@@ -542,7 +620,7 @@ class ClipClap_model(nn.Module):
 
         if self.reg_loss==True:
             l_reg = (
-                self.MSE_loss(theta_o, theta_w)
+                self.MSE_loss(z_for_pred, theta_w)
             )
         else:
             l_reg = torch.tensor(0., device=device)
@@ -557,12 +635,61 @@ class ClipClap_model(nn.Module):
             l_rec = torch.tensor(0., device=device)
 
 
-        loss_total = l_rec+l_reg+l_ce
+        loss_original = l_rec + l_reg + l_ce
+        loss_total = loss_original
+        loss_proto_kd = torch.tensor(0.0, device=device)
+        feature_mse = torch.tensor(0.0, device=device)
+        topk_overlap = torch.tensor(0.0, device=device)
+        top1_agree = torch.tensor(0.0, device=device)
+
+        # Prototype-preserving losses: ANN teacher uses theta_o.detach(); student uses z_av_snn.
+        if self.use_snn_conversion and (z_av_snn is not None):
+            feature_mse = self.MSE_loss(z_av_snn, z_av_ann)
+
+            proto = embedding_cross_entropy  # (K, dim_out)
+            tau = float(max(1e-6, self.proto_temperature))
+
+            z_ann_n = F.normalize(z_av_ann, dim=1)
+            z_snn_n = F.normalize(z_av_snn, dim=1)
+            p_n = F.normalize(proto, dim=1)
+            sim_ann = torch.matmul(z_ann_n, p_n.t())
+            sim_snn = torch.matmul(z_snn_n, p_n.t())
+
+            loss_proto_kd = F.kl_div(
+                F.log_softmax(sim_snn / tau, dim=1),
+                F.softmax(sim_ann / tau, dim=1),
+                reduction="batchmean",
+            ) * (tau * tau)
+
+            # Top-k prototype consistency: overlap between ANN teacher similarity ranking and SNN student ranking.
+            k = 5
+            k = min(k, sim_ann.shape[1])
+            if k > 0:
+                top_ann = torch.topk(sim_ann, k=k, dim=1).indices
+                top_snn = torch.topk(sim_snn, k=k, dim=1).indices
+                inter = (top_ann.unsqueeze(2) == top_snn.unsqueeze(1)).any(dim=2).float().sum(dim=1)
+                topk_overlap = (inter / float(k)).mean()
+                top1_agree = (top_ann[:, 0] == top_snn[:, 0]).float().mean()
+
+            loss_total = loss_total + (self.lambda_proto * loss_proto_kd) + (self.lambda_feat * feature_mse)
+
         loss_dict = {
             "Loss/total_loss": loss_total.detach().cpu(),
+            "Loss/original_loss": loss_original.detach().cpu(),
             "Loss/loss_reg": l_reg.detach().cpu(),
             "Loss/loss_cmd_rec": l_rec.detach().cpu(),
-            "Loss/cross_entropy": l_ce.detach().cpu()
+            "Loss/cross_entropy": l_ce.detach().cpu(),
+            "Loss/proto_kd": loss_proto_kd.detach().cpu(),
+            "Loss/feature_mse": feature_mse.detach().cpu(),
+            "Diag/proto_topk_overlap": topk_overlap.detach().cpu(),
+            "Diag/proto_top1_agree": top1_agree.detach().cpu(),
+            "Diag/theta_o_mean": theta_mean.detach().cpu(),
+            "Diag/theta_o_std": theta_std.detach().cpu(),
+            "Diag/theta_o_min": theta_min.detach().cpu(),
+            "Diag/theta_o_max": theta_max.detach().cpu(),
+            "Diag/theta_o_negative_ratio": theta_neg_ratio.detach().cpu(),
+            "Diag/snn_clip_ratio": snn_clip_ratio.detach().cpu(),
+            "Diag/snn_zero_ratio": snn_zero_ratio.detach().cpu(),
 
         }
         return loss_total, loss_dict
@@ -633,8 +760,18 @@ class ClipClap_model(nn.Module):
 
 
         theta_o = self.O_proj(o)
-
         theta_w=self.W_proj(w)
+
+        # When fake-SNN conversion is enabled, return the student embedding for similarity/metrics.
+        if self.use_snn_conversion:
+            theta_det = theta_o.detach()
+            q = float(min(1.0, max(0.5, self.snn_conv_threshold_percentile)))
+            thr = torch.quantile(theta_det.abs().reshape(-1), q).detach()
+            neg_ratio = (theta_det < 0).float().mean()
+            signed = bool(float(neg_ratio.detach()) > 0.1)
+            x_quant = self.fake_snn.quantize(theta_det, threshold=thr, signed=signed)
+            z_av_snn = self.fake_snn.ste(theta_o, x_quant)
+            return z_av_snn, z_av_snn, theta_w
 
         return theta_o, theta_o, theta_w
 

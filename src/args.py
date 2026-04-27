@@ -435,6 +435,43 @@ def args_main(*args, **kwargs):
         default=None,
     )
 
+    # Prototype-preserving ANN2SNN (fake-SNN) knobs: keep text prototypes continuous/offline.
+    model_group.add_argument(
+        "--use_snn_conversion",
+        help="Enable fake-SNN conversion branch and prototype-preserving losses (ANN teacher is detached).",
+        type=str_to_bool, nargs="?", const=True, default=False,
+    )
+    model_group.add_argument(
+        "--snn_timesteps",
+        help="Fake-SNN time steps T for quantized firing-rate approximation.",
+        type=int,
+        default=4,
+    )
+    model_group.add_argument(
+        "--lambda_proto",
+        help="Weight for prototype-preserving KL loss on fused embedding similarities.",
+        type=float,
+        default=0.5,
+    )
+    model_group.add_argument(
+        "--lambda_feat",
+        help="Weight for feature MSE between fake-SNN fused embedding and detached ANN fused embedding.",
+        type=float,
+        default=0.1,
+    )
+    model_group.add_argument(
+        "--proto_temperature",
+        help="Temperature tau for prototype-preserving KL loss.",
+        type=float,
+        default=2.0,
+    )
+    model_group.add_argument(
+        "--snn_conv_threshold_percentile",
+        help="Quantile (0..1) used to pick fake-SNN clamp threshold from ANN fused embedding magnitudes.",
+        type=float,
+        default=0.99,
+    )
+
     model_group.add_argument(
         "--perceiver",
         help="Flag to use the Perceiver model",
