@@ -266,6 +266,10 @@ def main(args):
         getattr(args, "lambda_feat", 1.0),
         getattr(args, "proto_temperature", 1.0),
         getattr(args, "snn_conv_threshold_percentile", 0.99),
+        getattr(args, "proto_kd_type", "kl_all"),
+        getattr(args, "proto_topk", 10),
+        getattr(args, "proto_warmup_epochs", 0),
+        getattr(args, "proto_conf_margin", 0.0),
     )
     if args.new_model_sequence==True:
         model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)

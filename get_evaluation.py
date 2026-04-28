@@ -124,6 +124,10 @@ def get_evaluation(args):
         getattr(config, "lambda_feat", 1.0),
         getattr(config, "proto_temperature", 1.0),
         getattr(config, "snn_conv_threshold_percentile", 0.99),
+        getattr(config, "proto_kd_type", "kl_all"),
+        getattr(config, "proto_topk", 10),
+        getattr(config, "proto_warmup_epochs", 0),
+        getattr(config, "proto_conf_margin", 0.0),
     )
 
     if config.new_model_sequence==True:

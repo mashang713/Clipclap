@@ -175,6 +175,10 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "lambda_feat", 1.0),
         getattr(cfg, "proto_temperature", 1.0),
         getattr(cfg, "snn_conv_threshold_percentile", 0.99),
+        getattr(cfg, "proto_kd_type", "kl_all"),
+        getattr(cfg, "proto_topk", 10),
+        getattr(cfg, "proto_warmup_epochs", 0),
+        getattr(cfg, "proto_conf_margin", 0.0),
     )
 
 

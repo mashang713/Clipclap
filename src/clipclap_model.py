@@ -499,6 +499,10 @@ class ClipClap_model(nn.Module):
         self.lambda_feat = float(params_model.get("lambda_feat", 1.0))
         self.proto_temperature = float(params_model.get("proto_temperature", 1.0))
         self.snn_conv_threshold_percentile = float(params_model.get("snn_conv_threshold_percentile", 0.99))
+        self.proto_kd_type = str(params_model.get("proto_kd_type", "kl_all"))
+        self.proto_topk = int(params_model.get("proto_topk", 10))
+        self.proto_warmup_epochs = int(params_model.get("proto_warmup_epochs", 0))
+        self.proto_conf_margin = float(params_model.get("proto_conf_margin", 0.0))
         self.fake_snn = FakeSNNConversion(timesteps=self.snn_timesteps)
 
     def optimize_scheduler(self, value):
@@ -554,7 +558,15 @@ class ClipClap_model(nn.Module):
         return output
 
 
-    def compute_loss(self, outputs, embeddings_crossentropy, gt_cross_entropy):
+    def _lambda_proto_eff(self, epoch):
+        """After warmup epochs, use full lambda_proto; else 0. If epoch unknown, use full weight."""
+        if epoch is None:
+            return float(self.lambda_proto)
+        if int(epoch) < int(self.proto_warmup_epochs):
+            return 0.0
+        return float(self.lambda_proto)
+
+    def compute_loss(self, outputs, embeddings_crossentropy, gt_cross_entropy, epoch=None):
 
         theta_w = outputs['theta_w']
 
@@ -638,40 +650,95 @@ class ClipClap_model(nn.Module):
         loss_original = l_rec + l_reg + l_ce
         loss_total = loss_original
         loss_proto_kd = torch.tensor(0.0, device=device)
+        loss_proto_kd_weighted_tensor = torch.tensor(0.0, device=device)
+        lambda_proto_eff_t = torch.tensor(0.0, device=device)
+        proto_conf_keep_ratio = torch.tensor(1.0, device=device)
+        proto_topk_diag = torch.tensor(float(self.proto_topk), device=device)
         feature_mse = torch.tensor(0.0, device=device)
         topk_overlap = torch.tensor(0.0, device=device)
         top1_agree = torch.tensor(0.0, device=device)
 
-        # Prototype-preserving losses: ANN teacher uses theta_o.detach(); student uses z_av_snn.
+        # Prototype-preserving losses: teacher sims from theta_o.detach(); student from z_av_snn. Prototypes unchanged.
         if self.use_snn_conversion and (z_av_snn is not None):
             feature_mse = self.MSE_loss(z_av_snn, z_av_ann)
 
             proto = embedding_cross_entropy  # (K, dim_out)
             tau = float(max(1e-6, self.proto_temperature))
-
-            z_ann_n = F.normalize(z_av_ann, dim=1)
-            z_snn_n = F.normalize(z_av_snn, dim=1)
             p_n = F.normalize(proto, dim=1)
-            sim_ann = torch.matmul(z_ann_n, p_n.t())
-            sim_snn = torch.matmul(z_snn_n, p_n.t())
+            theta_teacher_n = F.normalize(theta_o.detach(), dim=1)
+            z_student_n = F.normalize(z_av_snn, dim=1)
+            sim_ann = torch.matmul(theta_teacher_n, p_n.t())
+            sim_snn = torch.matmul(z_student_n, p_n.t())
 
-            loss_proto_kd = F.kl_div(
-                F.log_softmax(sim_snn / tau, dim=1),
-                F.softmax(sim_ann / tau, dim=1),
-                reduction="batchmean",
-            ) * (tau * tau)
+            n_cls = sim_ann.shape[1]
+            if self.proto_conf_margin > 0.0 and n_cls >= 2:
+                top2v = torch.topk(sim_ann.detach(), k=2, dim=1).values
+                gap = top2v[:, 0] - top2v[:, 1]
+                conf_mask = gap > self.proto_conf_margin
+            else:
+                conf_mask = torch.ones(sim_ann.shape[0], dtype=torch.bool, device=device)
+            proto_conf_keep_ratio = conf_mask.float().mean()
+            if conf_mask.any():
+                sim_ann_m = sim_ann[conf_mask]
+                sim_snn_m = sim_snn[conf_mask]
+            else:
+                sim_ann_m = sim_ann[:0]
+                sim_snn_m = sim_snn[:0]
 
-            # Top-k prototype consistency: overlap between ANN teacher similarity ranking and SNN student ranking.
-            k = 5
-            k = min(k, sim_ann.shape[1])
-            if k > 0:
+            kd_kind = self.proto_kd_type
+            if kd_kind == "kl_all":
+                if sim_ann_m.shape[0] == 0:
+                    loss_proto_kd = torch.tensor(0.0, device=device)
+                else:
+                    per_s = (
+                        F.kl_div(
+                            F.log_softmax(sim_snn_m / tau, dim=1),
+                            F.softmax(sim_ann_m.detach() / tau, dim=1),
+                            reduction="none",
+                        ).sum(dim=1)
+                        * (tau * tau)
+                    )
+                    loss_proto_kd = per_s.mean()
+                proto_topk_diag = torch.tensor(float(self.proto_topk), device=device)
+            elif kd_kind in ("kl_topk", "mse_topk"):
+                k_eff = min(self.proto_topk, n_cls)
+                proto_topk_diag = torch.tensor(float(k_eff), device=device)
+                if k_eff < 1 or sim_ann_m.shape[0] == 0:
+                    loss_proto_kd = torch.tensor(0.0, device=device)
+                else:
+                    _topk_idx = torch.topk(sim_ann_m.detach(), k=k_eff, dim=1).indices
+                    sim_at = torch.gather(sim_ann_m, 1, _topk_idx)
+                    sim_st = torch.gather(sim_snn_m, 1, _topk_idx)
+                    if kd_kind == "kl_topk":
+                        per_s = (
+                            F.kl_div(
+                                F.log_softmax(sim_st / tau, dim=1),
+                                F.softmax(sim_at.detach() / tau, dim=1),
+                                reduction="none",
+                            ).sum(dim=1)
+                            * (tau * tau)
+                        )
+                        loss_proto_kd = per_s.mean()
+                    else:
+                        per_s = (sim_st - sim_at.detach()).pow(2).mean(dim=1)
+                        loss_proto_kd = per_s.mean()
+            else:
+                loss_proto_kd = torch.tensor(0.0, device=device)
+                proto_topk_diag = torch.tensor(float(self.proto_topk), device=device)
+
+            # Top-k prototype consistency diagnostic (fixed k=5 as before).
+            k = min(5, n_cls)
+            if k > 0 and sim_ann.shape[0] > 0:
                 top_ann = torch.topk(sim_ann, k=k, dim=1).indices
                 top_snn = torch.topk(sim_snn, k=k, dim=1).indices
                 inter = (top_ann.unsqueeze(2) == top_snn.unsqueeze(1)).any(dim=2).float().sum(dim=1)
                 topk_overlap = (inter / float(k)).mean()
                 top1_agree = (top_ann[:, 0] == top_snn[:, 0]).float().mean()
 
-            loss_total = loss_total + (self.lambda_proto * loss_proto_kd) + (self.lambda_feat * feature_mse)
+            lambda_eff = self._lambda_proto_eff(epoch)
+            lambda_proto_eff_t = torch.tensor(lambda_eff, device=device)
+            loss_proto_kd_weighted_tensor = lambda_eff * loss_proto_kd
+            loss_total = loss_total + loss_proto_kd_weighted_tensor + (self.lambda_feat * feature_mse)
 
         loss_dict = {
             "Loss/total_loss": loss_total.detach().cpu(),
@@ -680,9 +747,14 @@ class ClipClap_model(nn.Module):
             "Loss/loss_cmd_rec": l_rec.detach().cpu(),
             "Loss/cross_entropy": l_ce.detach().cpu(),
             "Loss/proto_kd": loss_proto_kd.detach().cpu(),
+            "Loss/proto_kd_raw": loss_proto_kd.detach().cpu(),
+            "Loss/proto_kd_weighted": loss_proto_kd_weighted_tensor.detach().cpu(),
             "Loss/feature_mse": feature_mse.detach().cpu(),
             "Diag/proto_topk_overlap": topk_overlap.detach().cpu(),
             "Diag/proto_top1_agree": top1_agree.detach().cpu(),
+            "Diag/lambda_proto_eff": lambda_proto_eff_t.detach().cpu(),
+            "Diag/proto_conf_keep_ratio": proto_conf_keep_ratio.detach().cpu(),
+            "Diag/proto_topk": proto_topk_diag.detach().cpu(),
             "Diag/theta_o_mean": theta_mean.detach().cpu(),
             "Diag/theta_o_std": theta_std.detach().cpu(),
             "Diag/theta_o_min": theta_min.detach().cpu(),
@@ -696,13 +768,13 @@ class ClipClap_model(nn.Module):
 
     # cls_numeric = class index
     # cls_embedding = w2v embedding of the target
-    def optimize_params(self, audio, video, cls_numeric, cls_embedding, masks, timesteps, embedding_crossentropy, optimize=False):
+    def optimize_params(self, audio, video, cls_numeric, cls_embedding, masks, timesteps, embedding_crossentropy, optimize=False, epoch=None):
         if not self.is_sam_optim:
             # Forward pass
             outputs = self.forward(audio, video, cls_embedding, masks, timesteps)
 
             # Backward pass
-            loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy,  cls_numeric)
+            loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy, cls_numeric, epoch=epoch)
 
             if optimize == True:
                 self.optimizer_gen.zero_grad()
@@ -714,7 +786,7 @@ class ClipClap_model(nn.Module):
 
             enable_running_stats(self)
             outputs = self.forward(audio, video, cls_embedding, masks, timesteps)
-            loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy,  cls_numeric)
+            loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy, cls_numeric, epoch=epoch)
 
             if optimize:
                 # first forward-backward step
@@ -725,7 +797,7 @@ class ClipClap_model(nn.Module):
                 # second forward-backward step
                 disable_running_stats(self)
                 outputs_second = self.forward(audio, video, cls_embedding, masks, timesteps)
-                second_loss, _ = self.compute_loss(outputs_second, embedding_crossentropy,  cls_numeric)
+                second_loss, _ = self.compute_loss(outputs_second, embedding_crossentropy, cls_numeric, epoch=epoch)
                 second_loss.backward()
                 self.optimizer_gen.second_step(zero_grad=True)
 

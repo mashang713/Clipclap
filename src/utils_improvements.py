@@ -63,6 +63,10 @@ def get_model_params(
     lambda_feat=0.1,
     proto_temperature=2.0,
     snn_conv_threshold_percentile=0.99,
+    proto_kd_type="kl_all",
+    proto_topk=10,
+    proto_warmup_epochs=0,
+    proto_conf_margin=0.0,
     ):
 
     params_model = dict()
@@ -133,4 +137,8 @@ def get_model_params(
     params_model["lambda_feat"] = float(lambda_feat)
     params_model["proto_temperature"] = float(proto_temperature)
     params_model["snn_conv_threshold_percentile"] = float(snn_conv_threshold_percentile)
+    params_model["proto_kd_type"] = str(proto_kd_type)
+    params_model["proto_topk"] = int(proto_topk)
+    params_model["proto_warmup_epochs"] = int(proto_warmup_epochs)
+    params_model["proto_conf_margin"] = float(proto_conf_margin)
     return params_model

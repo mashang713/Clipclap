@@ -59,6 +59,10 @@ def add_logs_tensorboard(batch_loss_details, writer, batch_idx, step, which_stag
     writer.add_scalar(f"Loss/cross_entropy_"+which_stage, batch_loss_details['Loss/cross_entropy']/(batch_idx), step)
     if 'Loss/proto_kd' in batch_loss_details:
         writer.add_scalar(f"Loss/proto_kd_"+which_stage, batch_loss_details['Loss/proto_kd']/(batch_idx), step)
+    if 'Loss/proto_kd_raw' in batch_loss_details:
+        writer.add_scalar(f"Loss/proto_kd_raw_"+which_stage, batch_loss_details['Loss/proto_kd_raw']/(batch_idx), step)
+    if 'Loss/proto_kd_weighted' in batch_loss_details:
+        writer.add_scalar(f"Loss/proto_kd_weighted_"+which_stage, batch_loss_details['Loss/proto_kd_weighted']/(batch_idx), step)
     if 'Loss/feature_mse' in batch_loss_details:
         writer.add_scalar(f"Loss/feature_mse_"+which_stage, batch_loss_details['Loss/feature_mse']/(batch_idx), step)
     if 'Diag/proto_topk_overlap' in batch_loss_details:
@@ -82,6 +86,9 @@ def add_logs_tensorboard(batch_loss_details, writer, batch_idx, step, which_stag
         "Diag/snn_clip_ratio",
         "Diag/snn_zero_ratio",
         "Diag/proto_top1_agree",
+        "Diag/lambda_proto_eff",
+        "Diag/proto_conf_keep_ratio",
+        "Diag/proto_topk",
     ):
         if k in batch_loss_details:
             writer.add_scalar(f"{k}_{which_stage}", batch_loss_details[k] / (batch_idx), step)
@@ -126,9 +133,9 @@ def train_step(data_loader, model, criterion, optimizer, epoch, epochs, writer, 
             for i in range(inputs[2].shape[0]):
                 inputs[2][i] = mapping_dict[(inputs[2][[i]]).item()]
         if args.cross_entropy_loss==True:
-            loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=embeddings, optimize=True)
+            loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=embeddings, optimize=True, epoch=epoch)
         else:
-            loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=None, optimize=True)
+            loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=None, optimize=True, epoch=epoch)
         batch_loss_details=add_loss_details(loss_details, batch_loss_details)
         audio_emb, video_emb, emb_cls=model.get_embeddings(inputs[0], inputs[1], inputs[3], inputs[4], inputs[5])
         outputs=torch.stack([video_emb, emb_cls], dim=0)
@@ -220,9 +227,9 @@ def val_step(data_loader, model, criterion, epoch, epochs, writer, device, metri
                 for i in range(inputs[2].shape[0]):
                     inputs[2][i] = mapping_dict[(inputs[2][[i]]).item()]
             if args.cross_entropy_loss == True:
-                loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=embeddings, optimize=False)
+                loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=embeddings, optimize=False, epoch=epoch)
             else:
-                loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=None, optimize=False)
+                loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=None, optimize=False, epoch=epoch)
             batch_loss_details = add_loss_details(loss_details, batch_loss_details)
             audio_emb, video_emb, emb_cls = model.get_embeddings(inputs[0], inputs[1], inputs[3], inputs[4], inputs[5])
             outputs = (video_emb, emb_cls)

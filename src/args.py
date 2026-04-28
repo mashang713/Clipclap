@@ -485,6 +485,32 @@ def args_main(*args, **kwargs):
         type=float,
         default=0.99,
     )
+    model_group.add_argument(
+        "--proto_kd_type",
+        help="Prototype KD: kl_all (default, full-class KL), kl_topk (KL on teacher top-k protos), "
+        "mse_topk (MSE on teacher top-k similarity rows).",
+        type=str,
+        choices=("kl_all", "kl_topk", "mse_topk"),
+        default="kl_all",
+    )
+    model_group.add_argument(
+        "--proto_topk",
+        help="k for kl_topk / mse_topk (capped by number of seen prototypes).",
+        type=int,
+        default=10,
+    )
+    model_group.add_argument(
+        "--proto_warmup_epochs",
+        help="Epochs with zero effective proto-KD weight (lambda_proto_eff=0); then full lambda_proto.",
+        type=int,
+        default=0,
+    )
+    model_group.add_argument(
+        "--proto_conf_margin",
+        help="If >0, only batches with teacher (top1-top2) sim gap above this contribute to proto-KD.",
+        type=float,
+        default=0.0,
+    )
 
     model_group.add_argument(
         "--perceiver",
