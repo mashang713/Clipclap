@@ -196,7 +196,7 @@ def main() -> None:
         rows.append(
             {
                 "checkpoint": str(ckpt_path.resolve()),
-                "epoch_index": epoch_ix,
+                "epoch": epoch_ix,
                 "Seen": f"{100 * float(both['seen']):.4f}",
                 "Unseen": f"{100 * float(both['unseen']):.4f}",
                 "HM": f"{100 * float(both['hm']):.4f}",
