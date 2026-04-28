@@ -60,7 +60,7 @@ def main() -> None:
     cfg_path = args.cfg or (args.stage2_dir / "args.pkl")
     cfg = _load_cfg(cfg_path)
     if args.root_dir is not None:
-        cfg.root_dir = args.root_dir
+        cfg.root_dir = Path(args.root_dir)
     if args.dataset_name is not None:
         cfg.dataset_name = args.dataset_name
     if args.device is not None:

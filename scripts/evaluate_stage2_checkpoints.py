@@ -122,6 +122,13 @@ def _metrics_for_split(
     return out["both"]
 
 
+def _ensure_root_dir_path(cfg: Any) -> None:
+    """Dataset code uses cfg.root_dir / subpaths; argparse and overrides often pass str."""
+    rd = getattr(cfg, "root_dir", None)
+    if rd is not None and not isinstance(rd, Path):
+        cfg.root_dir = Path(rd)
+
+
 def model_params_from_cfg(cfg: Any):
     return get_model_params(
         cfg.lr,
@@ -180,6 +187,7 @@ def evaluate_all_ckpts(
     device: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Returns one dict per checkpoint with keys checkpoint, epoch, split, Seen.. (percent floats as formatted strings)."""
+    _ensure_root_dir_path(cfg)
     stage_a = stage_a_dir.resolve()
     stage_b = stage_b_dir.resolve()
     dev = device or getattr(cfg, "device", "cuda:0")
@@ -320,7 +328,7 @@ def main() -> None:
     cfg_path = args_ns.cfg or (args_ns.stage_b_dir / "args.pkl")
     cfg = pickle.load(cfg_path.open("rb"))
     if args_ns.root_dir is not None:
-        cfg.root_dir = args_ns.root_dir
+        cfg.root_dir = Path(args_ns.root_dir)
     if args_ns.dataset_name is not None:
         cfg.dataset_name = args_ns.dataset_name
     if args_ns.device is not None:
