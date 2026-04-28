@@ -1,0 +1,85 @@
+# Stage-B checkpoint selection by validation HM — command templates (Ubuntu server)
+# Fill ROOT / DATA / each STAGE1_* / STAGE2_* after: ls ~/ClipClap-GZSL/logs/<run_name>/
+# Avoid appending duplicate (run_name, seed) rows to SUMMARY — use section 5 OR section 4 for snn_full seed43/44, not both.
+
+ROOT=~/ClipClap-GZSL
+DATA=/home/ubuntu/data/UCF
+DS=UCF
+DEV=cuda:0
+SUMMARY=$ROOT/reports/stage2_val_selected_summary.csv
+mkdir -p "$ROOT/reports"
+
+# -----------------------------------------------------------------------------
+# 4) snn_full seed43 / seed44 — validation-led selection + test report (one row each)
+# -----------------------------------------------------------------------------
+
+STAGE1_S43=$ROOT/logs/snn_full_T8_p099_seed43_apr28/snn_full_T8_p099_seed43_apr28_Apr28_09-22-06_261510_vm-mary
+STAGE2_S43=$ROOT/logs/snn_full_T8_p099_seed43_apr28/snn_full_T8_p099_seed43_apr28_Apr28_09-24-25_400008_vm-mary
+
+python "$ROOT/scripts/select_stage2_ckpt_by_val.py" \
+  --stage_a_dir "$STAGE1_S43" \
+  --stage2_dir "$STAGE2_S43" \
+  --root_dir "$DATA" \
+  --dataset_name "$DS" \
+  --device "$DEV" \
+  --selection_metric HM \
+  --output_csv "$SUMMARY" \
+  --no_append
+
+# Seed44 (replace STAGE1_S44 / STAGE2_S44 after ls logs/snn_full_T8_p099_seed44_apr28/)
+STAGE1_S44="<REPLACE_STAGE1_seed44>"
+STAGE2_S44="<REPLACE_STAGE2_seed44>"
+
+python "$ROOT/scripts/select_stage2_ckpt_by_val.py" \
+  --stage_a_dir "$STAGE1_S44" \
+  --stage2_dir "$STAGE2_S44" \
+  --root_dir "$DATA" \
+  --dataset_name "$DS" \
+  --device "$DEV" \
+  --selection_metric HM \
+  --output_csv "$SUMMARY"
+
+# -----------------------------------------------------------------------------
+# Optional diagnostics — test-only sweep (oracle upper bound; NOT for selecting ckpt)
+# -----------------------------------------------------------------------------
+# python "$ROOT/scripts/evaluate_stage2_checkpoints.py" --stage_a_dir "$STAGE1_S43" --stage_b_dir "$STAGE2_S43" \
+#   --split test --selection_metric HM --output_csv "$ROOT/reports/diag_seed43_test_oracle.csv"
+
+# -----------------------------------------------------------------------------
+# 5) A / D / E × seeds 42–44 — append each summary row (same SUMMARY file)
+# -----------------------------------------------------------------------------
+# Replace STAGE1_* / STAGE2_* after ls for each run, e.g.:
+#   ls $ROOT/logs/ann_budget_baseline_seed42_apr28/
+#   ls $ROOT/logs/snn_feat_only_T8_p099_seed42_apr28/
+#   ls $ROOT/logs/snn_full_T8_p099_seed42_apr28/
+
+run_sel () {
+  local STAGE_A="$1" STAGE_B="$2"
+  python "$ROOT/scripts/select_stage2_ckpt_by_val.py" \
+    --stage_a_dir "$STAGE_A" \
+    --stage2_dir "$STAGE_B" \
+    --root_dir "$DATA" \
+    --dataset_name "$DS" \
+    --device "$DEV" \
+    --selection_metric HM \
+    --output_csv "$SUMMARY"
+}
+
+# Examples — uncomment and paste real paths:
+# STAGE1="<...ann_budget_baseline_seed42_apr28/...>"
+# STAGE2="<...stage2 subfolder...>"
+# run_sel "$STAGE1" "$STAGE2"
+
+# -----------------------------------------------------------------------------
+# 6) Paired summary (mean / stdev across seeds)
+# -----------------------------------------------------------------------------
+# After SUMMARY lists all runs (A, D, E for 42–44 + optional snn_full seed43/44):
+python "$ROOT/scripts/paired_val_selected_summary.py" \
+  --input_csv "$SUMMARY" \
+  --output_csv "$ROOT/reports/paired_val_selected_summary.csv"
+
+# -----------------------------------------------------------------------------
+# Validation sweeps only (all ckpts on val — no selection here)
+# -----------------------------------------------------------------------------
+# python "$ROOT/scripts/evaluate_stage2_checkpoints.py" --stage_a_dir "$STAGE1_S43" --stage_b_dir "$STAGE2_S43" \
+#   --split val --selection_metric HM --output_csv "$ROOT/reports/sweep_seed43_val_ckpts.csv"
