@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Build one row per seed: D_HM vs P4 (mse_topk+warmup) from rows produced by select_stage2_ckpt_by_val.py.
+Merge D (feat-only, lambda_proto=0) and P4 (mse_topk+warmup) rows from select_stage2_ckpt_by_val.py.
 
-Expected run_name patterns (same protocol as seed43 stable proto):
+Expected run_name patterns:
   D:  snn_feat_only_T8_p099_seed{seed}_stableproto_D
   P4: snn_proto_msetop10_l01_warm2_seed{seed}
 
-Appends merged rows to --output_csv (default: reports/stable_proto_multiseed_summary.csv).
-Use --no_append to overwrite the output file.
+Output columns:
+  seed, D_HM, P4_HM, P4_minus_D,
+  D_Seen, D_Unseen, P4_Seen, P4_Unseen, D_ZSL, P4_ZSL,
+  D_best_ckpt, P4_best_ckpt
 
-Does not run training or evaluation.
+Use --no_append to overwrite output_csv (recommended when regenerating the full table).
 """
 from __future__ import annotations
 
@@ -44,7 +46,7 @@ def main() -> None:
         "--input_csv",
         type=Path,
         required=True,
-        help="CSV containing select_stage2_ckpt_by_val rows (can concatenate multiple runs).",
+        help="CSV containing select_stage2_ckpt_by_val rows.",
     )
     ap.add_argument(
         "--output_csv",
@@ -56,7 +58,7 @@ def main() -> None:
         type=int,
         nargs="+",
         default=[42, 43, 44],
-        help="Seeds to emit rows for (must have both D and P4 rows in input_csv).",
+        help="Seeds to emit (each needs both D and P4 rows in input_csv).",
     )
     ap.add_argument("--no_append", action="store_true", help="Overwrite output_csv.")
     args = ap.parse_args()
@@ -69,12 +71,14 @@ def main() -> None:
         "D_HM",
         "P4_HM",
         "P4_minus_D",
-        "Seen",
-        "Unseen",
-        "HM",
-        "ZSL",
-        "best_ckpt_by_val",
-        "val_HM",
+        "D_Seen",
+        "D_Unseen",
+        "P4_Seen",
+        "P4_Unseen",
+        "D_ZSL",
+        "P4_ZSL",
+        "D_best_ckpt",
+        "P4_best_ckpt",
     ]
 
     merged: List[Dict[str, str]] = []
@@ -97,12 +101,14 @@ def main() -> None:
                 "D_HM": d_r["test_HM"],
                 "P4_HM": p4["test_HM"],
                 "P4_minus_D": f"{p4_hm - d_hm:.4f}",
-                "Seen": p4["test_Seen"],
-                "Unseen": p4["test_Unseen"],
-                "HM": p4["test_HM"],
-                "ZSL": p4["test_ZSL"],
-                "best_ckpt_by_val": str(p4["best_ckpt_by_val"]),
-                "val_HM": p4["best_val_HM"],
+                "D_Seen": d_r["test_Seen"],
+                "D_Unseen": d_r["test_Unseen"],
+                "P4_Seen": p4["test_Seen"],
+                "P4_Unseen": p4["test_Unseen"],
+                "D_ZSL": d_r["test_ZSL"],
+                "P4_ZSL": p4["test_ZSL"],
+                "D_best_ckpt": str(d_r["best_ckpt_by_val"]),
+                "P4_best_ckpt": str(p4["best_ckpt_by_val"]),
             }
         )
 
