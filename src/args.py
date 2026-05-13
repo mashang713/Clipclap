@@ -179,6 +179,62 @@ def args_main(*args, **kwargs):
         default=False,
     )
     parser.add_argument(
+        "--use_teacher_parallel_snn",
+        help="If true, add parallel pseudo-temporal SNN fusion on pooled model_input (ANN theta_o unchanged).",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
+        "--teacher_snn_timesteps",
+        help="SNN simulation steps for TeacherSNNFusionBranch (snntorch LIF loop).",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--teacher_snn_gamma",
+        help="Fusion weight: z_fused = theta_o + gamma * z_snn.",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--teacher_snn_alpha",
+        help="Weight on L_snn in combined CE: L_fused + alpha*L_snn + beta*L_ann.",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--teacher_snn_beta",
+        help="Weight on L_ann (theta_o CE) in combined CE.",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--teacher_snn_hidden_dim",
+        help="Hidden width inside TeacherSNNFusionBranch SNN_EmbeddingNet.",
+        type=int,
+        default=512,
+    )
+    parser.add_argument(
+        "--teacher_snn_threshold",
+        help="LIF firing threshold for TeacherSNNFusionBranch.",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--teacher_snn_decay",
+        help="LIF membrane leak beta (snntorch Leaky) for TeacherSNNFusionBranch.",
+        type=float,
+        default=0.9,
+    )
+    parser.add_argument(
+        "--teacher_snn_dropout",
+        help="Dropout inside TeacherSNNFusionBranch SNN_EmbeddingNet.",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
         "--epochs",
         help="Number of epochs",
         type=int

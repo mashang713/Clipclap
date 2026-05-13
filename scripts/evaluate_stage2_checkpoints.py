@@ -180,6 +180,15 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "proto_warmup_epochs", 0),
         getattr(cfg, "proto_conf_margin", 0.0),
         getattr(cfg, "debug_print_shapes", False),
+        getattr(cfg, "use_teacher_parallel_snn", False),
+        getattr(cfg, "teacher_snn_timesteps", 4),
+        getattr(cfg, "teacher_snn_gamma", 0.1),
+        getattr(cfg, "teacher_snn_alpha", 0.1),
+        getattr(cfg, "teacher_snn_beta", 1.0),
+        getattr(cfg, "teacher_snn_hidden_dim", 512),
+        getattr(cfg, "teacher_snn_threshold", 1.0),
+        getattr(cfg, "teacher_snn_decay", 0.9),
+        getattr(cfg, "teacher_snn_dropout", 0.1),
     )
 
 

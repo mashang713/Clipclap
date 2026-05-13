@@ -181,6 +181,38 @@ class SNN_EmbeddingNet(nn.Module):
         return self.forward(x)
 
 
+class TeacherSNNFusionBranch(nn.Module):
+    """
+    Teacher parallel SNN fusion branch: pseudo-temporal LIF stack on pooled AV features
+    (same dim as ``model_input``), output in semantic space (``dim_out``).
+    """
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        hidden_size=512,
+        dropout=0.1,
+        num_steps=4,
+        beta=0.9,
+        threshold=1.0,
+    ):
+        super().__init__()
+        self.net = SNN_EmbeddingNet(
+            input_size=input_size,
+            output_size=output_size,
+            dropout=dropout,
+            use_bn=True,
+            hidden_size=hidden_size,
+            num_steps=num_steps,
+            beta=beta,
+            threshold=threshold,
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 def _fuse_linear_bn1d(linear: nn.Linear, bn: nn.BatchNorm1d):
     """Fold BatchNorm1d into preceding Linear (use running stats, eval-style)."""
     gamma = bn.weight
@@ -448,7 +480,31 @@ class ClipClap_model(nn.Module):
             **emb_kw,
         )
 
-
+        # Teacher parallel SNN fusion branch (optional; does not replace ANN O_enc/O_proj).
+        # Input dim MUST match O_enc / model_input (same literals as above), not config input_size_*.
+        self.use_teacher_parallel_snn = bool(params_model.get("use_teacher_parallel_snn", False))
+        self.teacher_snn_gamma = float(params_model.get("teacher_snn_gamma", 0.1))
+        self.teacher_snn_alpha = float(params_model.get("teacher_snn_alpha", 0.1))
+        self.teacher_snn_beta = float(params_model.get("teacher_snn_beta", 1.0))
+        self.teacher_snn_fusion = None
+        self.teacher_snn_input_size = None
+        if self.use_teacher_parallel_snn:
+            if self.modality == "both":
+                fusion_in = 1536
+            elif self.modality == "audio":
+                fusion_in = 1024
+            else:
+                fusion_in = 512
+            self.teacher_snn_input_size = int(fusion_in)
+            self.teacher_snn_fusion = TeacherSNNFusionBranch(
+                input_size=self.teacher_snn_input_size,
+                output_size=int(self.dim_out),
+                hidden_size=int(params_model.get("teacher_snn_hidden_dim", 512)),
+                dropout=float(params_model.get("teacher_snn_dropout", 0.1)),
+                num_steps=int(params_model.get("teacher_snn_timesteps", 4)),
+                beta=float(params_model.get("teacher_snn_decay", 0.9)),
+                threshold=float(params_model.get("teacher_snn_threshold", 1.0)),
+            )
 
 
 
@@ -573,6 +629,17 @@ class ClipClap_model(nn.Module):
 
         theta_w = self.W_proj(w)
 
+        teacher_z_snn = None
+        teacher_z_fused = None
+        if self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None:
+            assert model_input.shape[1] == self.teacher_snn_input_size, (
+                f"TeacherSNNFusionBranch input dim mismatch: "
+                f"model_input has {model_input.shape[1]}, "
+                f"branch expects {self.teacher_snn_input_size}"
+            )
+            teacher_z_snn = self.teacher_snn_fusion(model_input)
+            teacher_z_fused = theta_o + self.teacher_snn_gamma * teacher_z_snn
+
         if self.debug_print_shapes and not self._forward_shape_debug_printed:
             self._forward_shape_debug_printed = True
             post_lines = [
@@ -582,6 +649,16 @@ class ClipClap_model(nn.Module):
             _shape_desc("o", o, post_lines)
             _shape_desc("theta_o", theta_o, post_lines)
             _shape_desc("theta_w", theta_w, post_lines)
+            if self.use_teacher_parallel_snn:
+                assert teacher_z_snn is not None and teacher_z_fused is not None, (
+                    "use_teacher_parallel_snn=True but teacher_z_snn/teacher_z_fused missing"
+                )
+                _shape_desc(
+                    "teacher_z_snn (parallel pseudo-temporal SNN fusion on pooled AV)",
+                    teacher_z_snn,
+                    post_lines,
+                )
+                _shape_desc("teacher_z_fused", teacher_z_fused, post_lines)
             print("\n".join(post_lines), flush=True)
 
         rho_w=self.D_w(theta_w)
@@ -593,6 +670,11 @@ class ClipClap_model(nn.Module):
             "rho_w": rho_w,
             "theta_o": theta_o,
             "rho_o": rho_o,
+            "teacher_z_snn": teacher_z_snn,
+            "teacher_z_fused": teacher_z_fused,
+            "teacher_parallel_enabled": bool(
+                self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None
+            ),
         }
 
 
@@ -618,8 +700,15 @@ class ClipClap_model(nn.Module):
 
         rho_o = outputs['rho_o']
 
+        teacher_z_snn = outputs.get("teacher_z_snn")
+        teacher_z_fused = outputs.get("teacher_z_fused")
 
         device = theta_w.device
+
+        l_ann_teacher = torch.tensor(0.0, device=device)
+        l_snn_teacher = torch.tensor(0.0, device=device)
+        l_fused_teacher = torch.tensor(0.0, device=device)
+        teacher_parallel_ce_used = False
 
         theta_det = theta_o.detach()
         # theta_o distribution diagnostics (always log; fused embedding stats). Must be based on detached theta_o.
@@ -665,9 +754,33 @@ class ClipClap_model(nn.Module):
 
         if self.cross_entropy_loss==True:
             Cross_loss=nn.CrossEntropyLoss()
-            scores=torch.matmul(z_for_pred, embedding_cross_entropy.t()) # (bs, 64) x (K_seen, 64).T = (bs, K_seen)
-            # gt_cross_entropy = [1, 3, 2, 55, 97, 45, ...] list of gt class labels -> shape (bs,)
-            l_ce=Cross_loss(scores, gt_cross_entropy)
+            use_teacher_parallel_ce = (
+                self.use_teacher_parallel_snn
+                and outputs.get("teacher_parallel_enabled")
+                and teacher_z_snn is not None
+                and teacher_z_fused is not None
+                and embedding_cross_entropy is not None
+            )
+            if embedding_cross_entropy is None:
+                l_ce = torch.tensor(0., device=device)
+            elif use_teacher_parallel_ce:
+                teacher_parallel_ce_used = True
+
+                def _teacher_ce_logits(z):
+                    return torch.matmul(z, embedding_cross_entropy.t())
+
+                l_ann_teacher = Cross_loss(_teacher_ce_logits(theta_o), gt_cross_entropy)
+                l_snn_teacher = Cross_loss(_teacher_ce_logits(teacher_z_snn), gt_cross_entropy)
+                l_fused_teacher = Cross_loss(_teacher_ce_logits(teacher_z_fused), gt_cross_entropy)
+                l_ce = (
+                    l_fused_teacher
+                    + self.teacher_snn_alpha * l_snn_teacher
+                    + self.teacher_snn_beta * l_ann_teacher
+                )
+            else:
+                scores=torch.matmul(z_for_pred, embedding_cross_entropy.t()) # (bs, 64) x (K_seen, 64).T = (bs, K_seen)
+                # gt_cross_entropy = [1, 3, 2, 55, 97, 45, ...] list of gt class labels -> shape (bs,)
+                l_ce=Cross_loss(scores, gt_cross_entropy)
         else:
             l_ce = torch.tensor(0., device=device)
 
@@ -805,6 +918,14 @@ class ClipClap_model(nn.Module):
             "Diag/snn_zero_ratio": snn_zero_ratio.detach().cpu(),
 
         }
+        if teacher_parallel_ce_used:
+            loss_dict["Loss/loss_teacher_ann"] = l_ann_teacher.detach().cpu()
+            loss_dict["Loss/loss_teacher_snn"] = l_snn_teacher.detach().cpu()
+            loss_dict["Loss/loss_teacher_fused"] = l_fused_teacher.detach().cpu()
+            loss_dict["Loss/loss_teacher_ce"] = l_ce.detach().cpu()
+            loss_dict["Diag/teacher_snn_gamma"] = torch.tensor(float(self.teacher_snn_gamma))
+            loss_dict["Diag/teacher_snn_alpha"] = torch.tensor(float(self.teacher_snn_alpha))
+            loss_dict["Diag/teacher_snn_beta"] = torch.tensor(float(self.teacher_snn_beta))
         return loss_total, loss_dict
 
     # cls_numeric = class index

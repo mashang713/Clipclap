@@ -68,6 +68,15 @@ def get_model_params(
     proto_warmup_epochs=0,
     proto_conf_margin=0.0,
     debug_print_shapes=False,
+    use_teacher_parallel_snn=False,
+    teacher_snn_timesteps=4,
+    teacher_snn_gamma=0.1,
+    teacher_snn_alpha=0.1,
+    teacher_snn_beta=1.0,
+    teacher_snn_hidden_dim=512,
+    teacher_snn_threshold=1.0,
+    teacher_snn_decay=0.9,
+    teacher_snn_dropout=0.1,
     ):
 
     params_model = dict()
@@ -143,4 +152,13 @@ def get_model_params(
     params_model["proto_warmup_epochs"] = int(proto_warmup_epochs)
     params_model["proto_conf_margin"] = float(proto_conf_margin)
     params_model["debug_print_shapes"] = bool(debug_print_shapes)
+    params_model["use_teacher_parallel_snn"] = bool(use_teacher_parallel_snn)
+    params_model["teacher_snn_timesteps"] = int(teacher_snn_timesteps)
+    params_model["teacher_snn_gamma"] = float(teacher_snn_gamma)
+    params_model["teacher_snn_alpha"] = float(teacher_snn_alpha)
+    params_model["teacher_snn_beta"] = float(teacher_snn_beta)
+    params_model["teacher_snn_hidden_dim"] = int(teacher_snn_hidden_dim)
+    params_model["teacher_snn_threshold"] = float(teacher_snn_threshold)
+    params_model["teacher_snn_decay"] = float(teacher_snn_decay)
+    params_model["teacher_snn_dropout"] = float(teacher_snn_dropout)
     return params_model

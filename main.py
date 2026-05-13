@@ -271,6 +271,15 @@ def main(args):
         getattr(args, "proto_warmup_epochs", 0),
         getattr(args, "proto_conf_margin", 0.0),
         getattr(args, "debug_print_shapes", False),
+        getattr(args, "use_teacher_parallel_snn", False),
+        getattr(args, "teacher_snn_timesteps", 4),
+        getattr(args, "teacher_snn_gamma", 0.1),
+        getattr(args, "teacher_snn_alpha", 0.1),
+        getattr(args, "teacher_snn_beta", 1.0),
+        getattr(args, "teacher_snn_hidden_dim", 512),
+        getattr(args, "teacher_snn_threshold", 1.0),
+        getattr(args, "teacher_snn_decay", 0.9),
+        getattr(args, "teacher_snn_dropout", 0.1),
     )
     if args.new_model_sequence==True:
         model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)
