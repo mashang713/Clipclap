@@ -67,6 +67,7 @@ def get_model_params(
     proto_topk=10,
     proto_warmup_epochs=0,
     proto_conf_margin=0.0,
+    debug_print_shapes=False,
     ):
 
     params_model = dict()
@@ -141,4 +142,5 @@ def get_model_params(
     params_model["proto_topk"] = int(proto_topk)
     params_model["proto_warmup_epochs"] = int(proto_warmup_epochs)
     params_model["proto_conf_margin"] = float(proto_conf_margin)
+    params_model["debug_print_shapes"] = bool(debug_print_shapes)
     return params_model

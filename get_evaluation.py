@@ -128,6 +128,7 @@ def get_evaluation(args):
         getattr(config, "proto_topk", 10),
         getattr(config, "proto_warmup_epochs", 0),
         getattr(config, "proto_conf_margin", 0.0),
+        getattr(config, "debug_print_shapes", False),
     )
 
     if config.new_model_sequence==True:

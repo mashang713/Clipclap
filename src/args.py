@@ -171,6 +171,14 @@ def args_main(*args, **kwargs):
         type=str
     )
     parser.add_argument(
+        "--debug_print_shapes",
+        help="If true, ClipClap_model.forward prints a/v/w and intermediate shapes once per process.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
         "--epochs",
         help="Number of epochs",
         type=int

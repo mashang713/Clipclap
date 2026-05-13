@@ -504,12 +504,43 @@ class ClipClap_model(nn.Module):
         self.proto_warmup_epochs = int(params_model.get("proto_warmup_epochs", 0))
         self.proto_conf_margin = float(params_model.get("proto_conf_margin", 0.0))
         self.fake_snn = FakeSNNConversion(timesteps=self.snn_timesteps)
+        self.debug_print_shapes = bool(params_model.get("debug_print_shapes", False))
+        self._forward_shape_debug_entry_printed = False
+        self._forward_shape_debug_printed = False
 
     def optimize_scheduler(self, value):
         if self.lr_scheduler:
             self.scheduler_learning_rate.step(value)
 
     def forward(self, a, v, w, masks, timesteps):
+        w_cls_raw = w
+
+        def _shape_desc(tag, x, lines_out):
+            if torch.is_tensor(x):
+                lines_out.append(f"  {tag}: Tensor shape={tuple(x.shape)} dtype={x.dtype}")
+            elif isinstance(x, np.ndarray):
+                lines_out.append(f"  {tag}: ndarray shape={x.shape} dtype={x.dtype}")
+            elif isinstance(x, dict):
+                lines_out.append(f"  {tag}: dict keys={list(x.keys())}")
+                for k, v in x.items():
+                    _shape_desc(f"{tag}.{k}", v, lines_out)
+            elif isinstance(x, (list, tuple)):
+                lines_out.append(f"  {tag}: {type(x).__name__} len={len(x)}")
+            else:
+                lines_out.append(f"  {tag}: {type(x).__name__}")
+
+        if self.debug_print_shapes and not self._forward_shape_debug_entry_printed:
+            self._forward_shape_debug_entry_printed = True
+            pre_lines = [
+                "[ClipClap_model.forward] one-time debug (BEFORE b, _ = a.shape / torch.cat / O_enc):",
+            ]
+            _shape_desc("a (raw forward input)", a, pre_lines)
+            _shape_desc("v (raw forward input)", v, pre_lines)
+            _shape_desc("w (forward arg cls_embedding, raw)", w_cls_raw, pre_lines)
+            _shape_desc("masks", masks, pre_lines)
+            _shape_desc("timesteps", timesteps, pre_lines)
+            print("\n".join(pre_lines), flush=True)
+
         b, _ = a.shape
         device = a.device
         v = v.type(torch.float32)
@@ -542,6 +573,16 @@ class ClipClap_model(nn.Module):
 
         theta_w = self.W_proj(w)
 
+        if self.debug_print_shapes and not self._forward_shape_debug_printed:
+            self._forward_shape_debug_printed = True
+            post_lines = [
+                "[ClipClap_model.forward] one-time debug (AFTER model_input / O_enc / O_proj / theta_w):",
+            ]
+            _shape_desc("model_input", model_input, post_lines)
+            _shape_desc("o", o, post_lines)
+            _shape_desc("theta_o", theta_o, post_lines)
+            _shape_desc("theta_w", theta_w, post_lines)
+            print("\n".join(post_lines), flush=True)
 
         rho_w=self.D_w(theta_w)
 
