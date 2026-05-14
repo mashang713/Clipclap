@@ -187,6 +187,56 @@ def args_main(*args, **kwargs):
         default=False,
     )
     parser.add_argument(
+        "--teacher_snn_arch",
+        help="backend_only: SNN from concat(model_input) only (v2). "
+        "full_snn_route: SNN from a/v through trainable SNN frontends then backend (pre-extracted pooled AV only).",
+        type=str,
+        default="backend_only",
+        choices=("backend_only", "full_snn_route"),
+    )
+    parser.add_argument(
+        "--teacher_frontend_snn_timesteps",
+        help="LIF steps for teacher SNN audio/video frontends (full_snn_route).",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--teacher_frontend_snn_hidden_dim",
+        help="Hidden dim for teacher SNN frontends (fc1 width).",
+        type=int,
+        default=512,
+    )
+    parser.add_argument(
+        "--teacher_frontend_snn_decay",
+        help="Membrane leak beta for teacher SNN frontends.",
+        type=float,
+        default=0.9,
+    )
+    parser.add_argument(
+        "--teacher_frontend_snn_threshold",
+        help="Firing threshold for teacher SNN frontends.",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--teacher_frontend_snn_dropout",
+        help="Dropout on first-layer spikes in teacher SNN frontends.",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--teacher_frontend_fire_rate_target",
+        help="Target spike rate per dim for optional frontend firing regularizer.",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--teacher_frontend_fire_rate_reg",
+        help="Weight on frontend firing MSE vs target; 0 disables.",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
         "--teacher_snn_fusion_mode",
         help="Teacher fusion: 'add' (theta_o + gamma*z_snn) or 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn).",
         type=str,

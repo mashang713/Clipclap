@@ -84,6 +84,14 @@ def get_model_params(
     teacher_spike_scale_strength=0.2,
     teacher_fire_rate_target=0.1,
     teacher_fire_rate_reg=0.0,
+    teacher_snn_arch="backend_only",
+    teacher_frontend_snn_timesteps=4,
+    teacher_frontend_snn_hidden_dim=512,
+    teacher_frontend_snn_decay=0.9,
+    teacher_frontend_snn_threshold=1.0,
+    teacher_frontend_snn_dropout=0.1,
+    teacher_frontend_fire_rate_target=0.1,
+    teacher_frontend_fire_rate_reg=0.0,
     ):
 
     params_model = dict()
@@ -175,4 +183,12 @@ def get_model_params(
     params_model["teacher_spike_scale_strength"] = float(teacher_spike_scale_strength)
     params_model["teacher_fire_rate_target"] = float(teacher_fire_rate_target)
     params_model["teacher_fire_rate_reg"] = float(teacher_fire_rate_reg)
+    params_model["teacher_snn_arch"] = str(teacher_snn_arch)
+    params_model["teacher_frontend_snn_timesteps"] = int(teacher_frontend_snn_timesteps)
+    params_model["teacher_frontend_snn_hidden_dim"] = int(teacher_frontend_snn_hidden_dim)
+    params_model["teacher_frontend_snn_decay"] = float(teacher_frontend_snn_decay)
+    params_model["teacher_frontend_snn_threshold"] = float(teacher_frontend_snn_threshold)
+    params_model["teacher_frontend_snn_dropout"] = float(teacher_frontend_snn_dropout)
+    params_model["teacher_frontend_fire_rate_target"] = float(teacher_frontend_fire_rate_target)
+    params_model["teacher_frontend_fire_rate_reg"] = float(teacher_frontend_fire_rate_reg)
     return params_model
