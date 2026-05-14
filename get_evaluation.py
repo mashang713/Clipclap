@@ -138,6 +138,13 @@ def get_evaluation(args):
         getattr(config, "teacher_snn_threshold", 1.0),
         getattr(config, "teacher_snn_decay", 0.9),
         getattr(config, "teacher_snn_dropout", 0.1),
+        getattr(config, "teacher_snn_fusion_mode", "add"),
+        getattr(config, "teacher_ann_gate_snn", False),
+        getattr(config, "teacher_gate_strength", 0.5),
+        getattr(config, "teacher_leak_strength", 0.2),
+        getattr(config, "teacher_spike_scale_strength", 0.2),
+        getattr(config, "teacher_fire_rate_target", 0.1),
+        getattr(config, "teacher_fire_rate_reg", 0.0),
     )
 
     if config.new_model_sequence==True:

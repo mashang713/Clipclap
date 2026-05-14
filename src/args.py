@@ -187,8 +187,53 @@ def args_main(*args, **kwargs):
         default=False,
     )
     parser.add_argument(
+        "--teacher_snn_fusion_mode",
+        help="Teacher fusion: 'add' (theta_o + gamma*z_snn) or 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn).",
+        type=str,
+        default="add",
+        choices=("add", "gated_scale"),
+    )
+    parser.add_argument(
+        "--teacher_ann_gate_snn",
+        help="If true, pass theta_o into TeacherSNNFusionBranch to gate SNN currents and effective leak.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
+        "--teacher_gate_strength",
+        help="ANN gate scales hidden current as h *= (1 - strength * sigmoid(ann_gate(theta_o))).",
+        type=float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--teacher_leak_strength",
+        help="ANN gate increases membrane leak on layer-1 (beta_eff clamped to [0, 0.99]).",
+        type=float,
+        default=0.2,
+    )
+    parser.add_argument(
+        "--teacher_spike_scale_strength",
+        help="In gated_scale mode, theta_scaled = theta_o * (1 + strength * (2*spike_scale - 1)).",
+        type=float,
+        default=0.2,
+    )
+    parser.add_argument(
+        "--teacher_fire_rate_target",
+        help="Target per-dim spike rate for optional firing regularizer.",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--teacher_fire_rate_reg",
+        help="Weight on mean squared (spike_rate - target); 0 disables.",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
         "--teacher_snn_timesteps",
-        help="SNN simulation steps for TeacherSNNFusionBranch (snntorch LIF loop).",
+        help="SNN simulation steps for TeacherSNNFusionBranch (custom LIF loop).",
         type=int,
         default=4,
     )
@@ -212,7 +257,7 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_snn_hidden_dim",
-        help="Hidden width inside TeacherSNNFusionBranch SNN_EmbeddingNet.",
+        help="Hidden width inside TeacherSNNFusionBranch (fc1).",
         type=int,
         default=512,
     )
@@ -224,13 +269,13 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_snn_decay",
-        help="LIF membrane leak beta (snntorch Leaky) for TeacherSNNFusionBranch.",
+        help="LIF membrane leak beta (second layer / mem2; layer-1 uses gated beta_eff when gating on).",
         type=float,
         default=0.9,
     )
     parser.add_argument(
         "--teacher_snn_dropout",
-        help="Dropout inside TeacherSNNFusionBranch SNN_EmbeddingNet.",
+        help="Dropout on first-layer spikes inside TeacherSNNFusionBranch.",
         type=float,
         default=0.1,
     )

@@ -77,6 +77,13 @@ def get_model_params(
     teacher_snn_threshold=1.0,
     teacher_snn_decay=0.9,
     teacher_snn_dropout=0.1,
+    teacher_snn_fusion_mode="add",
+    teacher_ann_gate_snn=False,
+    teacher_gate_strength=0.5,
+    teacher_leak_strength=0.2,
+    teacher_spike_scale_strength=0.2,
+    teacher_fire_rate_target=0.1,
+    teacher_fire_rate_reg=0.0,
     ):
 
     params_model = dict()
@@ -161,4 +168,11 @@ def get_model_params(
     params_model["teacher_snn_threshold"] = float(teacher_snn_threshold)
     params_model["teacher_snn_decay"] = float(teacher_snn_decay)
     params_model["teacher_snn_dropout"] = float(teacher_snn_dropout)
+    params_model["teacher_snn_fusion_mode"] = str(teacher_snn_fusion_mode)
+    params_model["teacher_ann_gate_snn"] = bool(teacher_ann_gate_snn)
+    params_model["teacher_gate_strength"] = float(teacher_gate_strength)
+    params_model["teacher_leak_strength"] = float(teacher_leak_strength)
+    params_model["teacher_spike_scale_strength"] = float(teacher_spike_scale_strength)
+    params_model["teacher_fire_rate_target"] = float(teacher_fire_rate_target)
+    params_model["teacher_fire_rate_reg"] = float(teacher_fire_rate_reg)
     return params_model

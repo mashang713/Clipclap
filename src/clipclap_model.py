@@ -25,6 +25,21 @@ except ImportError:  # optional until user runs: pip install snntorch
 torch.set_printoptions(threshold=10_000)
 
 
+class _SpikeSurrogate(torch.autograd.Function):
+    """Straight-through binary spike; backward uses 1 / (1 + |x|)^2 style surrogate."""
+
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return (x > 0).to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (x,) = ctx.saved_tensors
+        denom = (1.0 + torch.abs(x)).pow(2).clamp(min=1e-6)
+        return grad_output / denom
+
+
 class FakeSNNConversion(nn.Module):
     """
     Minimal fake-SNN conversion for prototype-preserving ANN2SNN.
@@ -183,34 +198,103 @@ class SNN_EmbeddingNet(nn.Module):
 
 class TeacherSNNFusionBranch(nn.Module):
     """
-    Teacher parallel SNN fusion branch: pseudo-temporal LIF stack on pooled AV features
-    (same dim as ``model_input``), output in semantic space (``dim_out``).
+    Teacher parallel SNN fusion branch (v2): lightweight two-layer LIF loop on pooled AV
+    ``model_input``, optional ANN-gated currents/leakage, spike stats for reciprocal scaling.
+    Does not use global ``SNN_EmbeddingNet`` / snntorch.
     """
 
     def __init__(
         self,
         input_size,
+        hidden_size,
         output_size,
-        hidden_size=512,
-        dropout=0.1,
-        num_steps=4,
-        beta=0.9,
-        threshold=1.0,
+        num_steps,
+        beta,
+        threshold,
+        dropout,
+        ann_dim,
+        use_ann_gate,
+        gate_strength,
+        leak_strength,
     ):
         super().__init__()
-        self.net = SNN_EmbeddingNet(
-            input_size=input_size,
-            output_size=output_size,
-            dropout=dropout,
-            use_bn=True,
-            hidden_size=hidden_size,
-            num_steps=num_steps,
-            beta=beta,
-            threshold=threshold,
-        )
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.dropout = nn.Dropout(dropout)
+        self.num_steps = int(num_steps)
+        self.beta = float(beta)
+        self.threshold = float(threshold)
+        self.use_ann_gate = bool(use_ann_gate)
+        self.gate_strength = float(gate_strength)
+        self.leak_strength = float(leak_strength)
+        self.ann_gate = nn.Linear(ann_dim, hidden_size) if self.use_ann_gate else None
+        self.scale_proj = nn.Linear(output_size, output_size)
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x, ann_context=None):
+        """
+        Parameters
+        ----------
+        x : Tensor [B, input_size]
+            Pooled AV ``model_input``.
+        ann_context : Tensor [B, ann_dim] or None
+            ANN semantic embedding (e.g. ``theta_o``) for optional gating.
+        """
+        B, _ = x.shape
+        device, dtype = x.device, x.dtype
+        h_dim = self.fc1.out_features
+        out_dim = self.fc2.out_features
+
+        gate = None
+        if ann_context is not None and self.ann_gate is not None:
+            gate = torch.sigmoid(self.ann_gate(ann_context))
+
+        mem1 = torch.zeros(B, h_dim, device=device, dtype=dtype)
+        mem2 = torch.zeros(B, out_dim, device=device, dtype=dtype)
+        spike_count = torch.zeros(B, out_dim, device=device, dtype=dtype)
+        mem2_acc = torch.zeros(B, out_dim, device=device, dtype=dtype)
+
+        beta_s = torch.tensor(self.beta, device=device, dtype=dtype)
+        thr = torch.tensor(self.threshold, device=device, dtype=dtype)
+
+        for _ in range(self.num_steps):
+            h_cur = self.fc1(x)
+            if gate is not None:
+                h_cur = h_cur * (1.0 - self.gate_strength * gate)
+
+            if gate is not None:
+                beta_eff = beta_s * (1.0 - self.leak_strength * gate)
+                beta_eff = torch.clamp(beta_eff, 0.0, 0.99)
+            else:
+                beta_eff = beta_s
+
+            mem1 = beta_eff * mem1 + h_cur
+            spk1 = _SpikeSurrogate.apply(mem1 - thr)
+            mem1 = mem1 * (1.0 - spk1.detach())
+
+            out_cur = self.fc2(self.dropout(spk1))
+            mem2 = beta_s * mem2 + out_cur
+            spk2 = _SpikeSurrogate.apply(mem2 - thr)
+            mem2 = mem2 * (1.0 - spk2.detach())
+
+            spike_count = spike_count + spk2
+            mem2_acc = mem2_acc + mem2
+
+        n = float(self.num_steps)
+        spike_rate = spike_count / n
+        z_snn = mem2_acc / n
+        spike_scale = torch.sigmoid(self.scale_proj(spike_rate))
+
+        gate_mean = gate.mean() if gate is not None else torch.tensor(0.0, device=device, dtype=dtype)
+        fire_rate_mean = spike_rate.mean()
+
+        aux = {
+            "spike_count": spike_count,
+            "spike_rate": spike_rate,
+            "spike_scale": spike_scale,
+            "gate_mean": gate_mean,
+            "fire_rate_mean": fire_rate_mean,
+        }
+        return z_snn, aux
 
 
 def _fuse_linear_bn1d(linear: nn.Linear, bn: nn.BatchNorm1d):
@@ -483,6 +567,21 @@ class ClipClap_model(nn.Module):
         # Teacher parallel SNN fusion branch (optional; does not replace ANN O_enc/O_proj).
         # Input dim MUST match O_enc / model_input (same literals as above), not config input_size_*.
         self.use_teacher_parallel_snn = bool(params_model.get("use_teacher_parallel_snn", False))
+        self.teacher_snn_fusion_mode = str(
+            params_model.get("teacher_snn_fusion_mode", "add")
+        ).lower()
+        if self.teacher_snn_fusion_mode not in ("add", "gated_scale"):
+            raise ValueError(
+                f"teacher_snn_fusion_mode must be 'add' or 'gated_scale', got {self.teacher_snn_fusion_mode!r}"
+            )
+        self.teacher_ann_gate_snn = bool(params_model.get("teacher_ann_gate_snn", False))
+        self.teacher_gate_strength = float(params_model.get("teacher_gate_strength", 0.5))
+        self.teacher_leak_strength = float(params_model.get("teacher_leak_strength", 0.2))
+        self.teacher_spike_scale_strength = float(
+            params_model.get("teacher_spike_scale_strength", 0.2)
+        )
+        self.teacher_fire_rate_target = float(params_model.get("teacher_fire_rate_target", 0.1))
+        self.teacher_fire_rate_reg = float(params_model.get("teacher_fire_rate_reg", 0.0))
         self.teacher_snn_gamma = float(params_model.get("teacher_snn_gamma", 0.1))
         self.teacher_snn_alpha = float(params_model.get("teacher_snn_alpha", 0.1))
         self.teacher_snn_beta = float(params_model.get("teacher_snn_beta", 1.0))
@@ -496,14 +595,20 @@ class ClipClap_model(nn.Module):
             else:
                 fusion_in = 512
             self.teacher_snn_input_size = int(fusion_in)
+            out_dim = int(self.dim_out)
+            hid = int(params_model.get("teacher_snn_hidden_dim", 512))
             self.teacher_snn_fusion = TeacherSNNFusionBranch(
                 input_size=self.teacher_snn_input_size,
-                output_size=int(self.dim_out),
-                hidden_size=int(params_model.get("teacher_snn_hidden_dim", 512)),
-                dropout=float(params_model.get("teacher_snn_dropout", 0.1)),
+                hidden_size=hid,
+                output_size=out_dim,
                 num_steps=int(params_model.get("teacher_snn_timesteps", 4)),
                 beta=float(params_model.get("teacher_snn_decay", 0.9)),
                 threshold=float(params_model.get("teacher_snn_threshold", 1.0)),
+                dropout=float(params_model.get("teacher_snn_dropout", 0.1)),
+                ann_dim=out_dim,
+                use_ann_gate=self.teacher_ann_gate_snn,
+                gate_strength=self.teacher_gate_strength,
+                leak_strength=self.teacher_leak_strength,
             )
 
 
@@ -631,14 +736,41 @@ class ClipClap_model(nn.Module):
 
         teacher_z_snn = None
         teacher_z_fused = None
+        teacher_theta_scaled = None
+        teacher_spike_count = None
+        teacher_spike_rate = None
+        teacher_spike_scale = None
+        teacher_gate_mean = None
+        teacher_fire_rate_mean = None
+        teacher_fusion_mode = None
         if self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None:
             assert model_input.shape[1] == self.teacher_snn_input_size, (
                 f"TeacherSNNFusionBranch input dim mismatch: "
                 f"model_input has {model_input.shape[1]}, "
                 f"branch expects {self.teacher_snn_input_size}"
             )
-            teacher_z_snn = self.teacher_snn_fusion(model_input)
-            teacher_z_fused = theta_o + self.teacher_snn_gamma * teacher_z_snn
+            ann_ctx = theta_o if self.teacher_ann_gate_snn else None
+            teacher_z_snn, teacher_aux = self.teacher_snn_fusion(
+                model_input, ann_context=ann_ctx
+            )
+            teacher_spike_count = teacher_aux["spike_count"]
+            teacher_spike_rate = teacher_aux["spike_rate"]
+            teacher_spike_scale = teacher_aux["spike_scale"]
+            teacher_gate_mean = teacher_aux["gate_mean"]
+            teacher_fire_rate_mean = teacher_aux["fire_rate_mean"]
+            teacher_fusion_mode = self.teacher_snn_fusion_mode
+            if self.teacher_snn_fusion_mode == "gated_scale":
+                teacher_theta_scaled = theta_o * (
+                    1.0
+                    + self.teacher_spike_scale_strength
+                    * (2.0 * teacher_spike_scale - 1.0)
+                )
+                teacher_z_fused = (
+                    teacher_theta_scaled + self.teacher_snn_gamma * teacher_z_snn
+                )
+            else:
+                teacher_theta_scaled = None
+                teacher_z_fused = theta_o + self.teacher_snn_gamma * teacher_z_snn
 
         if self.debug_print_shapes and not self._forward_shape_debug_printed:
             self._forward_shape_debug_printed = True
@@ -659,6 +791,13 @@ class ClipClap_model(nn.Module):
                     post_lines,
                 )
                 _shape_desc("teacher_z_fused", teacher_z_fused, post_lines)
+                if teacher_theta_scaled is not None:
+                    _shape_desc("teacher_theta_scaled", teacher_theta_scaled, post_lines)
+                _shape_desc("teacher_spike_count", teacher_spike_count, post_lines)
+                _shape_desc("teacher_spike_rate", teacher_spike_rate, post_lines)
+                _shape_desc("teacher_spike_scale", teacher_spike_scale, post_lines)
+                _shape_desc("teacher_gate_mean", teacher_gate_mean, post_lines)
+                _shape_desc("teacher_fire_rate_mean", teacher_fire_rate_mean, post_lines)
             print("\n".join(post_lines), flush=True)
 
         rho_w=self.D_w(theta_w)
@@ -672,6 +811,13 @@ class ClipClap_model(nn.Module):
             "rho_o": rho_o,
             "teacher_z_snn": teacher_z_snn,
             "teacher_z_fused": teacher_z_fused,
+            "teacher_theta_scaled": teacher_theta_scaled,
+            "teacher_spike_count": teacher_spike_count,
+            "teacher_spike_rate": teacher_spike_rate,
+            "teacher_spike_scale": teacher_spike_scale,
+            "teacher_gate_mean": teacher_gate_mean,
+            "teacher_fire_rate_mean": teacher_fire_rate_mean,
+            "teacher_fusion_mode": teacher_fusion_mode,
             "teacher_parallel_enabled": bool(
                 self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None
             ),
@@ -704,6 +850,7 @@ class ClipClap_model(nn.Module):
         teacher_z_fused = outputs.get("teacher_z_fused")
 
         device = theta_w.device
+        loss_teacher_fire = None
 
         l_ann_teacher = torch.tensor(0.0, device=device)
         l_snn_teacher = torch.tensor(0.0, device=device)
@@ -800,8 +947,16 @@ class ClipClap_model(nn.Module):
         else:
             l_rec = torch.tensor(0., device=device)
 
-
         loss_original = l_rec + l_reg + l_ce
+        if (
+            self.use_teacher_parallel_snn
+            and self.teacher_fire_rate_reg > 0.0
+            and outputs.get("teacher_spike_rate") is not None
+        ):
+            sr = outputs["teacher_spike_rate"]
+            loss_teacher_fire = ((sr - self.teacher_fire_rate_target) ** 2).mean()
+            loss_original = loss_original + self.teacher_fire_rate_reg * loss_teacher_fire
+
         loss_total = loss_original
         loss_proto_kd = torch.tensor(0.0, device=device)
         loss_proto_kd_weighted_tensor = torch.tensor(0.0, device=device)
@@ -926,6 +1081,17 @@ class ClipClap_model(nn.Module):
             loss_dict["Diag/teacher_snn_gamma"] = torch.tensor(float(self.teacher_snn_gamma))
             loss_dict["Diag/teacher_snn_alpha"] = torch.tensor(float(self.teacher_snn_alpha))
             loss_dict["Diag/teacher_snn_beta"] = torch.tensor(float(self.teacher_snn_beta))
+        if outputs.get("teacher_parallel_enabled") and outputs.get("teacher_spike_rate") is not None:
+            loss_dict["Diag/teacher_fire_rate_mean"] = outputs["teacher_fire_rate_mean"].detach().cpu()
+            loss_dict["Diag/teacher_gate_mean"] = outputs["teacher_gate_mean"].detach().cpu()
+            loss_dict["Diag/teacher_spike_scale_mean"] = outputs["teacher_spike_scale"].mean().detach().cpu()
+            loss_dict["Diag/teacher_fusion_mode_gated"] = torch.tensor(
+                1.0 if str(outputs.get("teacher_fusion_mode") or "") == "gated_scale" else 0.0
+            )
+            if loss_teacher_fire is not None:
+                loss_dict["Loss/loss_teacher_fire_rate"] = loss_teacher_fire.detach().cpu()
+            else:
+                loss_dict["Loss/loss_teacher_fire_rate"] = torch.tensor(0.0)
         return loss_total, loss_dict
 
     # cls_numeric = class index
