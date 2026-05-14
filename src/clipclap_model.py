@@ -639,6 +639,11 @@ class ClipClap_model(nn.Module):
         self.teacher_snn_gamma = float(params_model.get("teacher_snn_gamma", 0.1))
         self.teacher_snn_alpha = float(params_model.get("teacher_snn_alpha", 0.1))
         self.teacher_snn_beta = float(params_model.get("teacher_snn_beta", 1.0))
+        self.teacher_eval_repr = str(params_model.get("teacher_eval_repr", "fused")).lower()
+        if self.teacher_eval_repr not in ("ann", "snn", "fused"):
+            raise ValueError(
+                f"teacher_eval_repr must be 'ann', 'snn', or 'fused', got {self.teacher_eval_repr!r}"
+            )
         self.teacher_snn_fusion = None
         self.teacher_snn_input_size = None
         self.teacher_audio_snn_front = None
@@ -701,6 +706,10 @@ class ClipClap_model(nn.Module):
                         leak_strength=0.0,
                     )
 
+            print(
+                f"  teacher_eval_repr (val HM / get_embeddings): {self.teacher_eval_repr}",
+                flush=True,
+            )
 
 
 
@@ -1333,37 +1342,33 @@ class ClipClap_model(nn.Module):
         return loss_numeric, loss
 
     def get_embeddings(self, a, v, w, masks, timesteps):
-        b, _ = a.shape
-        device = a.device
-        v = v.type(torch.float32)
-
-
+        a = a.float()
+        v = v.float()
 
         if self.modality == 'audio':
             w = w[:,512:]
-            model_input = a
+            model_input_ann = a
 
         elif self.modality == 'video':
             w = w[:,:512]
-            model_input = v
+            model_input_ann = v
         else:
             if self.word_embeddings == 'wavcaps':
                 w = w[:,512:]
             elif self.word_embeddings == 'clip':
                 w = w[:,:512]
-            model_input = torch.cat((v, a), dim=1)
+            model_input_ann = torch.cat((v, a), dim=1)
 
+        model_input = model_input_ann
 
         o = self.O_enc(model_input)
 
         w = self.W_enc(w)
 
-
-
         theta_o = self.O_proj(o)
-        theta_w=self.W_proj(w)
+        theta_w = self.W_proj(w)
 
-        # When fake-SNN conversion is enabled, return the student embedding for similarity/metrics.
+        # Fake-SNN conversion for metrics (unchanged; takes priority over teacher eval repr).
         if self.use_snn_conversion:
             theta_det = theta_o.detach()
             q = float(min(1.0, max(0.5, self.snn_conv_threshold_percentile)))
@@ -1374,7 +1379,55 @@ class ClipClap_model(nn.Module):
             z_av_snn = self.fake_snn.ste(theta_o, x_quant)
             return z_av_snn, z_av_snn, theta_w
 
-        return theta_o, theta_o, theta_w
+        eval_z = theta_o
+        if (
+            self.use_teacher_parallel_snn
+            and self.teacher_snn_fusion is not None
+            and model_input_ann.shape[1] == self.teacher_snn_input_size
+        ):
+            if self.teacher_snn_arch == "full_snn_route":
+                if self.modality == "both":
+                    a_snn, _ = self.teacher_audio_snn_front(a)
+                    v_snn, _ = self.teacher_video_snn_front(v)
+                    model_input_snn = torch.cat((v_snn, a_snn), dim=1)
+                elif self.modality == "audio":
+                    a_snn, _ = self.teacher_audio_snn_front(a)
+                    model_input_snn = a_snn
+                else:
+                    v_snn, _ = self.teacher_video_snn_front(v)
+                    model_input_snn = v_snn
+            else:
+                model_input_snn = model_input_ann
+
+            if model_input_snn.shape[1] == self.teacher_snn_input_size:
+                ann_ctx = theta_o if self.teacher_ann_gate_snn else None
+                teacher_z_snn, teacher_aux = self.teacher_snn_fusion(
+                    model_input_snn, ann_context=ann_ctx
+                )
+                if self.teacher_snn_fusion_mode == "gated_scale":
+                    spike_scale = teacher_aux["spike_scale"]
+                    teacher_theta_scaled = theta_o * (
+                        1.0
+                        + self.teacher_spike_scale_strength
+                        * (2.0 * spike_scale - 1.0)
+                    )
+                    teacher_z_fused = (
+                        teacher_theta_scaled + self.teacher_snn_gamma * teacher_z_snn
+                    )
+                else:
+                    teacher_z_fused = theta_o + self.teacher_snn_gamma * teacher_z_snn
+
+                r = self.teacher_eval_repr
+                if r == "ann":
+                    eval_z = theta_o
+                elif r == "snn":
+                    eval_z = teacher_z_snn if teacher_z_snn is not None else theta_o
+                elif r == "fused":
+                    eval_z = teacher_z_fused if teacher_z_fused is not None else theta_o
+                else:
+                    eval_z = theta_o
+
+        return eval_z, eval_z, theta_w
 
 
 def build_clipclap_model(model_params, input_size_audio, input_size_video):

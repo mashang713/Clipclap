@@ -295,6 +295,7 @@ def main(args):
         getattr(args, "teacher_frontend_snn_dropout", 0.1),
         getattr(args, "teacher_frontend_fire_rate_target", 0.1),
         getattr(args, "teacher_frontend_fire_rate_reg", 0.0),
+        getattr(args, "teacher_eval_repr", "fused"),
     )
     if args.new_model_sequence==True:
         model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)

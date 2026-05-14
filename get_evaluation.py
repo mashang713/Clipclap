@@ -153,6 +153,7 @@ def get_evaluation(args):
         getattr(config, "teacher_frontend_snn_dropout", 0.1),
         getattr(config, "teacher_frontend_fire_rate_target", 0.1),
         getattr(config, "teacher_frontend_fire_rate_reg", 0.0),
+        getattr(config, "teacher_eval_repr", "fused"),
     )
 
     if config.new_model_sequence==True:

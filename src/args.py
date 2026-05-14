@@ -237,6 +237,14 @@ def args_main(*args, **kwargs):
         default=0.0,
     )
     parser.add_argument(
+        "--teacher_eval_repr",
+        help="Which embedding MeanClassAccuracy / get_embeddings uses when teacher parallel is on: "
+        "ann=theta_o, snn=teacher_z_snn, fused=teacher_z_fused. Ignored when use_teacher_parallel_snn=false.",
+        type=str,
+        default="fused",
+        choices=("ann", "snn", "fused"),
+    )
+    parser.add_argument(
         "--teacher_snn_fusion_mode",
         help="Teacher fusion: 'add' (theta_o + gamma*z_snn) or 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn).",
         type=str,

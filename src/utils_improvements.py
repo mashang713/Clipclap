@@ -92,6 +92,7 @@ def get_model_params(
     teacher_frontend_snn_dropout=0.1,
     teacher_frontend_fire_rate_target=0.1,
     teacher_frontend_fire_rate_reg=0.0,
+    teacher_eval_repr="fused",
     ):
 
     params_model = dict()
@@ -191,4 +192,5 @@ def get_model_params(
     params_model["teacher_frontend_snn_dropout"] = float(teacher_frontend_snn_dropout)
     params_model["teacher_frontend_fire_rate_target"] = float(teacher_frontend_fire_rate_target)
     params_model["teacher_frontend_fire_rate_reg"] = float(teacher_frontend_fire_rate_reg)
+    params_model["teacher_eval_repr"] = str(teacher_eval_repr)
     return params_model

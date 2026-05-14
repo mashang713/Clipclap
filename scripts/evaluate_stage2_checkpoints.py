@@ -204,6 +204,7 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "teacher_frontend_snn_dropout", 0.1),
         getattr(cfg, "teacher_frontend_fire_rate_target", 0.1),
         getattr(cfg, "teacher_frontend_fire_rate_reg", 0.0),
+        getattr(cfg, "teacher_eval_repr", "fused"),
     )
 
 
