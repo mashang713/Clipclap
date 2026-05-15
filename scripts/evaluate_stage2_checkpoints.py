@@ -205,6 +205,8 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "teacher_frontend_fire_rate_target", 0.1),
         getattr(cfg, "teacher_frontend_fire_rate_reg", 0.0),
         getattr(cfg, "teacher_eval_repr", "fused"),
+        getattr(cfg, "teacher_fusion_warmup_epochs", 0),
+        getattr(cfg, "teacher_gamma_warmup", True),
     )
 
 

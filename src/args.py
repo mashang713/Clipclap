@@ -297,9 +297,23 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_snn_gamma",
-        help="Fusion weight: z_fused = theta_o + gamma * z_snn.",
+        help="Fusion weight: z_fused = theta_o + gamma * z_snn (after warmup, gamma_eff ramps to this).",
         type=float,
         default=0.1,
+    )
+    parser.add_argument(
+        "--teacher_fusion_warmup_epochs",
+        help="Linearly ramp teacher fusion gamma from 0 to teacher_snn_gamma over this many epochs (0 = no ramp).",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--teacher_gamma_warmup",
+        help="If true and teacher_fusion_warmup_epochs>0, gamma_eff = teacher_snn_gamma * min(1, epoch/warmup_epochs).",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
     )
     parser.add_argument(
         "--teacher_snn_alpha",

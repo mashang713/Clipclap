@@ -93,6 +93,8 @@ def get_model_params(
     teacher_frontend_fire_rate_target=0.1,
     teacher_frontend_fire_rate_reg=0.0,
     teacher_eval_repr="fused",
+    teacher_fusion_warmup_epochs=0,
+    teacher_gamma_warmup=True,
     ):
 
     params_model = dict()
@@ -193,4 +195,6 @@ def get_model_params(
     params_model["teacher_frontend_fire_rate_target"] = float(teacher_frontend_fire_rate_target)
     params_model["teacher_frontend_fire_rate_reg"] = float(teacher_frontend_fire_rate_reg)
     params_model["teacher_eval_repr"] = str(teacher_eval_repr)
+    params_model["teacher_fusion_warmup_epochs"] = int(teacher_fusion_warmup_epochs)
+    params_model["teacher_gamma_warmup"] = bool(teacher_gamma_warmup)
     return params_model

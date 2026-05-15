@@ -154,6 +154,8 @@ def get_evaluation(args):
         getattr(config, "teacher_frontend_fire_rate_target", 0.1),
         getattr(config, "teacher_frontend_fire_rate_reg", 0.0),
         getattr(config, "teacher_eval_repr", "fused"),
+        getattr(config, "teacher_fusion_warmup_epochs", 0),
+        getattr(config, "teacher_gamma_warmup", True),
     )
 
     if config.new_model_sequence==True:

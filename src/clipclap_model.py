@@ -644,6 +644,8 @@ class ClipClap_model(nn.Module):
             raise ValueError(
                 f"teacher_eval_repr must be 'ann', 'snn', or 'fused', got {self.teacher_eval_repr!r}"
             )
+        self.teacher_fusion_warmup_epochs = int(params_model.get("teacher_fusion_warmup_epochs", 0))
+        self.teacher_gamma_warmup = bool(params_model.get("teacher_gamma_warmup", True))
         self.teacher_snn_fusion = None
         self.teacher_snn_input_size = None
         self.teacher_audio_snn_front = None
@@ -710,6 +712,11 @@ class ClipClap_model(nn.Module):
                 f"  teacher_eval_repr (val HM / get_embeddings): {self.teacher_eval_repr}",
                 flush=True,
             )
+            print(
+                f"  teacher_fusion_warmup_epochs={self.teacher_fusion_warmup_epochs}, "
+                f"teacher_gamma_warmup={self.teacher_gamma_warmup}",
+                flush=True,
+            )
 
 
 
@@ -772,7 +779,7 @@ class ClipClap_model(nn.Module):
         if self.lr_scheduler:
             self.scheduler_learning_rate.step(value)
 
-    def forward(self, a, v, w, masks, timesteps):
+    def forward(self, a, v, w, masks, timesteps, epoch=None):
         w_cls_raw = w
 
         def _shape_desc(tag, x, lines_out):
@@ -909,6 +916,7 @@ class ClipClap_model(nn.Module):
             teacher_gate_mean = teacher_aux["gate_mean"]
             teacher_fire_rate_mean = teacher_aux["fire_rate_mean"]
             teacher_fusion_mode = self.teacher_snn_fusion_mode
+            gamma_eff = self._teacher_gamma_effective(epoch)
             if self.teacher_snn_fusion_mode == "gated_scale":
                 teacher_theta_scaled = theta_o * (
                     1.0
@@ -916,11 +924,11 @@ class ClipClap_model(nn.Module):
                     * (2.0 * teacher_spike_scale - 1.0)
                 )
                 teacher_z_fused = (
-                    teacher_theta_scaled + self.teacher_snn_gamma * teacher_z_snn
+                    teacher_theta_scaled + gamma_eff * teacher_z_snn
                 )
             else:
                 teacher_theta_scaled = None
-                teacher_z_fused = theta_o + self.teacher_snn_gamma * teacher_z_snn
+                teacher_z_fused = theta_o + gamma_eff * teacher_z_snn
 
         if self.debug_print_shapes and not self._forward_shape_debug_printed:
             self._forward_shape_debug_printed = True
@@ -1008,6 +1016,17 @@ class ClipClap_model(nn.Module):
         if int(epoch) < int(self.proto_warmup_epochs):
             return 0.0
         return float(self.lambda_proto)
+
+    def _teacher_gamma_effective(self, epoch):
+        """Ramped fusion weight for teacher_z_fused; epoch None uses full gamma (e.g. eval get_embeddings)."""
+        g = float(self.teacher_snn_gamma)
+        if not self.use_teacher_parallel_snn:
+            return g
+        if epoch is None:
+            return g
+        if self.teacher_gamma_warmup and self.teacher_fusion_warmup_epochs > 0:
+            return g * min(1.0, float(epoch) / float(self.teacher_fusion_warmup_epochs))
+        return g
 
     def compute_loss(self, outputs, embeddings_crossentropy, gt_cross_entropy, epoch=None):
 
@@ -1302,6 +1321,13 @@ class ClipClap_model(nn.Module):
                 loss_dict["Diag/teacher_video_front_fire_rate_mean"] = (
                     outputs["teacher_video_front_fire_rate_mean"].detach().cpu()
                 )
+        if self.use_teacher_parallel_snn:
+            loss_dict["Diag/teacher_gamma_eff"] = torch.tensor(
+                float(self._teacher_gamma_effective(epoch))
+            )
+            loss_dict["Diag/teacher_fusion_warmup_epochs"] = torch.tensor(
+                float(self.teacher_fusion_warmup_epochs)
+            )
         return loss_total, loss_dict
 
     # cls_numeric = class index
@@ -1309,7 +1335,7 @@ class ClipClap_model(nn.Module):
     def optimize_params(self, audio, video, cls_numeric, cls_embedding, masks, timesteps, embedding_crossentropy, optimize=False, epoch=None):
         if not self.is_sam_optim:
             # Forward pass
-            outputs = self.forward(audio, video, cls_embedding, masks, timesteps)
+            outputs = self.forward(audio, video, cls_embedding, masks, timesteps, epoch=epoch)
 
             # Backward pass
             loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy, cls_numeric, epoch=epoch)
@@ -1323,7 +1349,7 @@ class ClipClap_model(nn.Module):
             # SAM optimizer requires two forward / backward
 
             enable_running_stats(self)
-            outputs = self.forward(audio, video, cls_embedding, masks, timesteps)
+            outputs = self.forward(audio, video, cls_embedding, masks, timesteps, epoch=epoch)
             loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy, cls_numeric, epoch=epoch)
 
             if optimize:
@@ -1334,7 +1360,7 @@ class ClipClap_model(nn.Module):
 
                 # second forward-backward step
                 disable_running_stats(self)
-                outputs_second = self.forward(audio, video, cls_embedding, masks, timesteps)
+                outputs_second = self.forward(audio, video, cls_embedding, masks, timesteps, epoch=epoch)
                 second_loss, _ = self.compute_loss(outputs_second, embedding_crossentropy, cls_numeric, epoch=epoch)
                 second_loss.backward()
                 self.optimizer_gen.second_step(zero_grad=True)
@@ -1411,11 +1437,13 @@ class ClipClap_model(nn.Module):
                         + self.teacher_spike_scale_strength
                         * (2.0 * spike_scale - 1.0)
                     )
+                    gamma_ge = self._teacher_gamma_effective(None)
                     teacher_z_fused = (
-                        teacher_theta_scaled + self.teacher_snn_gamma * teacher_z_snn
+                        teacher_theta_scaled + gamma_ge * teacher_z_snn
                     )
                 else:
-                    teacher_z_fused = theta_o + self.teacher_snn_gamma * teacher_z_snn
+                    gamma_ge = self._teacher_gamma_effective(None)
+                    teacher_z_fused = theta_o + gamma_ge * teacher_z_snn
 
                 r = self.teacher_eval_repr
                 if r == "ann":
