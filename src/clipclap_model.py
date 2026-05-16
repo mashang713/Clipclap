@@ -470,6 +470,77 @@ def init_snn_clipclap_from_ann_checkpoint(
 
 
 
+TEACHER_INIT_ANN_PREFIXES = ("O_enc.", "W_enc.", "O_proj.", "D_o.", "W_proj.", "D_w.")
+
+
+def apply_teacher_init_ann_checkpoint(model, checkpoint_path, freeze_ann: bool, map_location):
+    """
+    Load matching ANN backbone tensors from a stage-1 checkpoint into ``ClipClap_model``.
+    Does not load teacher SNN modules. Optionally freezes backbone and rebuilds the optimizer
+    to include only ``requires_grad=True`` parameters.
+    """
+    path = str(checkpoint_path)
+    print(f"teacher_init_ann_path: {path}", flush=True)
+    ckpt = torch.load(path, map_location=map_location)
+    src = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    if not isinstance(src, dict):
+        raise TypeError(f"Expected checkpoint dict or dict with 'model' key, got {type(src)}")
+
+    tgt_state = model.state_dict()
+    loaded, skipped_not_allowed, skipped_missing_in_model, skipped_shape = [], [], [], []
+
+    for raw_k, v in src.items():
+        k = raw_k.replace("module.", "", 1) if "module." in raw_k else raw_k
+        if not k.startswith(TEACHER_INIT_ANN_PREFIXES):
+            skipped_not_allowed.append(k)
+            continue
+        if k not in tgt_state:
+            skipped_missing_in_model.append(k)
+            continue
+        if tuple(v.shape) != tuple(tgt_state[k].shape):
+            skipped_shape.append(f"{k} ckpt{tuple(v.shape)} model{tuple(tgt_state[k].shape)}")
+            continue
+        tgt_state[k].copy_(v.to(device=tgt_state[k].device, dtype=tgt_state[k].dtype))
+        loaded.append(k)
+
+    def _fmt_keys(keys, limit=30):
+        keys = list(keys)
+        if len(keys) <= limit:
+            return str(keys)
+        return str(keys[:limit]) + f" ... (+{len(keys) - limit} more)"
+
+    print(f"loaded ANN keys ({len(loaded)}): {_fmt_keys(loaded)}", flush=True)
+    n_na, n_miss, n_shape = len(skipped_not_allowed), len(skipped_missing_in_model), len(skipped_shape)
+    print(
+        f"skipped keys (not_allowed={n_na}, missing_in_model={n_miss}, shape_mismatch={n_shape})",
+        flush=True,
+    )
+    if n_na:
+        print(f"  sample not_allowed: {_fmt_keys(skipped_not_allowed, limit=8)}", flush=True)
+    if n_miss:
+        print(f"  sample missing_in_model: {_fmt_keys(skipped_missing_in_model, limit=8)}", flush=True)
+    if n_shape:
+        print(f"  shape mismatches: {_fmt_keys(skipped_shape, limit=8)}", flush=True)
+
+    if freeze_ann:
+        frozen = 0
+        for name, p in model.named_parameters():
+            if name.startswith(TEACHER_INIT_ANN_PREFIXES):
+                p.requires_grad = False
+                frozen += 1
+        print(f"frozen ANN params: {frozen}", flush=True)
+    else:
+        print("frozen ANN params: 0 (teacher_freeze_ann=False)", flush=True)
+
+    trainable = sum(1 for p in model.parameters() if p.requires_grad)
+    teacher_trainable = sum(
+        1 for n, p in model.named_parameters() if p.requires_grad and not n.startswith(TEACHER_INIT_ANN_PREFIXES)
+    )
+    print(f"trainable teacher params: {teacher_trainable} (all trainable tensors: {trainable})", flush=True)
+
+    model.rebuild_optimizer_trainable_only()
+
+
 class ClipClap_model(nn.Module):
     def __init__(self, params_model, input_size_audio, input_size_video):
         super(ClipClap_model, self).__init__()
@@ -723,33 +794,11 @@ class ClipClap_model(nn.Module):
 
 
 
-        # Optimizers
+        # Optimizers (only parameters with requires_grad=True; call ``rebuild_optimizer_trainable_only`` again after teacher ANN init/freeze)
         print('Defining optimizers...', end='')
         self.lr = params_model['lr']
-
-        optimizer = params_model['optimizer']
-        self.is_sam_optim = False
-        if optimizer == 'adam':
-            self.optimizer_gen = optim.Adam(
-                self.parameters(),
-                lr=self.lr, weight_decay=1e-5
-            )
-            if self.lr_scheduler:
-                self.scheduler_learning_rate = optim.lr_scheduler.ReduceLROnPlateau(
-                    self.optimizer_gen, 'max', patience=3
-                )
-
-        elif optimizer == 'adam-sam':
-            self.optimizer_gen = SAM(self.parameters(), optim.Adam, lr=self.lr, weight_decay=1e-5)
-            self.is_sam_optim = True
-            if self.lr_scheduler:
-                # lr scheduling on base optimizer
-                self.scheduler_learning_rate = optim.lr_scheduler.ReduceLROnPlateau(
-                    self.optimizer_gen.base_optimizer, 'max', patience=3
-                )
-        else:
-            raise NotImplementedError
-
+        self._optimizer_name = params_model['optimizer']
+        self.rebuild_optimizer_trainable_only()
         print('Done')
 
         # Loss function
@@ -778,6 +827,29 @@ class ClipClap_model(nn.Module):
     def optimize_scheduler(self, value):
         if self.lr_scheduler:
             self.scheduler_learning_rate.step(value)
+
+    def rebuild_optimizer_trainable_only(self):
+        """Rebuild Adam or SAM using only ``requires_grad=True`` parameters."""
+        trainable_params = [p for p in self.parameters() if p.requires_grad]
+        if not trainable_params:
+            raise RuntimeError("rebuild_optimizer_trainable_only: no trainable parameters.")
+        opt = self._optimizer_name
+        self.is_sam_optim = False
+        if opt == "adam":
+            self.optimizer_gen = optim.Adam(trainable_params, lr=self.lr, weight_decay=1e-5)
+            if self.lr_scheduler:
+                self.scheduler_learning_rate = optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer_gen, "max", patience=3
+                )
+        elif opt == "adam-sam":
+            self.optimizer_gen = SAM(trainable_params, optim.Adam, lr=self.lr, weight_decay=1e-5)
+            self.is_sam_optim = True
+            if self.lr_scheduler:
+                self.scheduler_learning_rate = optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer_gen.base_optimizer, "max", patience=3
+                )
+        else:
+            raise NotImplementedError
 
     def forward(self, a, v, w, masks, timesteps, epoch=None):
         w_cls_raw = w

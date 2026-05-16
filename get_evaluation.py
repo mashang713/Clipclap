@@ -156,6 +156,8 @@ def get_evaluation(args):
         getattr(config, "teacher_eval_repr", "fused"),
         getattr(config, "teacher_fusion_warmup_epochs", 0),
         getattr(config, "teacher_gamma_warmup", True),
+        getattr(config, "teacher_init_ann_path", None),
+        getattr(config, "teacher_freeze_ann", False),
     )
 
     if config.new_model_sequence==True:

@@ -11,7 +11,7 @@ from get_evaluation import get_evaluation
 from src.dataset import ActivityNetDataset, AudioSetZSLDataset, ContrastiveDataset, VGGSoundDataset, UCFDataset
 from src.dataset import DefaultCollator
 from src.metrics import DetailedLosses, MeanClassAccuracy, PercentOverlappingClasses, TargetDifficulty
-from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint
+from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint, apply_teacher_init_ann_checkpoint
 from src.sampler import SamplerFactory
 from src.train import train
 from src.loss import L2Loss
@@ -298,6 +298,8 @@ def main(args):
         getattr(args, "teacher_eval_repr", "fused"),
         getattr(args, "teacher_fusion_warmup_epochs", 0),
         getattr(args, "teacher_gamma_warmup", True),
+        getattr(args, "teacher_init_ann_path", None),
+        getattr(args, "teacher_freeze_ann", False),
     )
     if args.new_model_sequence==True:
         model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)
@@ -307,6 +309,19 @@ def main(args):
         raise AttributeError("No correct model name.")
     print_model_size(model, logger)
     model.to(args.device)
+
+    if getattr(args, "teacher_init_ann_path", None):
+        apply_teacher_init_ann_checkpoint(
+            model,
+            args.teacher_init_ann_path,
+            bool(getattr(args, "teacher_freeze_ann", False)),
+            args.device,
+        )
+        logger.info(
+            "Teacher ANN init: path=%s freeze_ann=%s",
+            args.teacher_init_ann_path,
+            getattr(args, "teacher_freeze_ann", False),
+        )
 
     if getattr(args, "model_backend", "ann") == "snn" and getattr(args, "snn_init_ann_path", None):
         init_snn_clipclap_from_ann_checkpoint(

@@ -207,6 +207,8 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "teacher_eval_repr", "fused"),
         getattr(cfg, "teacher_fusion_warmup_epochs", 0),
         getattr(cfg, "teacher_gamma_warmup", True),
+        getattr(cfg, "teacher_init_ann_path", None),
+        getattr(cfg, "teacher_freeze_ann", False),
     )
 
 

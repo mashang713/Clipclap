@@ -352,6 +352,20 @@ def args_main(*args, **kwargs):
         default=0.1,
     )
     parser.add_argument(
+        "--teacher_init_ann_path",
+        help="Optional .pt checkpoint (dict with 'model' key) to load ANN backbone weights (O_enc/W_enc/O_proj/D_o/W_proj/D_w) before training teacher SNN; teacher modules stay randomly initialized.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--teacher_freeze_ann",
+        help="If true, freeze ANN backbone parameters (requires_grad=False); optimizer only updates trainable (e.g. teacher SNN) parameters.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
         "--epochs",
         help="Number of epochs",
         type=int
