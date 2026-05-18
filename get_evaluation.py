@@ -158,6 +158,7 @@ def get_evaluation(args):
         getattr(config, "teacher_gamma_warmup", True),
         getattr(config, "teacher_init_ann_path", None),
         getattr(config, "teacher_freeze_ann", False),
+        str(getattr(config, "feature_extraction_method", "") or ""),
     )
 
     if config.new_model_sequence==True:

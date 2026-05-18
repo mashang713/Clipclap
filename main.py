@@ -208,9 +208,27 @@ def main(args):
         alpha=1,
         kind='random'
     )
+    from src.feature_constants import (
+        TEMPORAL_CLIP_FEATURE_METHOD,
+        TEMPORAL_CLIP_NUM_FRAMES,
+        is_temporal_clip_feature_method,
+    )
+    temporal_collator_kw = {}
+    if is_temporal_clip_feature_method(str(args.feature_extraction_method)):
+        temporal_collator_kw["temporal_video_frames"] = TEMPORAL_CLIP_NUM_FRAMES
     if args.selavi==False:
-        collator_train = DefaultCollator(mode=args.batch_seqlen_train, max_len=args.batch_seqlen_train_maxlen, trim=args.batch_seqlen_train_trim,)
-        collator_test = DefaultCollator(mode=args.batch_seqlen_test, max_len=args.batch_seqlen_test_maxlen, trim=args.batch_seqlen_test_trim)
+        collator_train = DefaultCollator(
+            mode=args.batch_seqlen_train,
+            max_len=args.batch_seqlen_train_maxlen,
+            trim=args.batch_seqlen_train_trim,
+            **temporal_collator_kw,
+        )
+        collator_test = DefaultCollator(
+            mode=args.batch_seqlen_test,
+            max_len=args.batch_seqlen_test_maxlen,
+            trim=args.batch_seqlen_test_trim,
+            **temporal_collator_kw,
+        )
     elif args.selavi==True:
         collator_train = DefaultCollator(mode=args.batch_seqlen_train, max_len=args.batch_seqlen_train_maxlen,trim=args.batch_seqlen_train_trim,rate_video=1, rate_audio=1)
         collator_test = DefaultCollator(mode=args.batch_seqlen_test, max_len=args.batch_seqlen_test_maxlen,trim=args.batch_seqlen_test_trim,rate_video=1, rate_audio=1)
@@ -300,6 +318,7 @@ def main(args):
         getattr(args, "teacher_gamma_warmup", True),
         getattr(args, "teacher_init_ann_path", None),
         getattr(args, "teacher_freeze_ann", False),
+        str(getattr(args, "feature_extraction_method", "") or ""),
     )
     if args.new_model_sequence==True:
         model = build_clipclap_model(model_params, input_size_audio=args.input_size_audio, input_size_video=args.input_size_video)

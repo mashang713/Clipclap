@@ -9,6 +9,11 @@ from torch.utils import data
 from tqdm import tqdm
 
 from src.utils import read_features, get_class_names
+from src.feature_constants import (
+    TEMPORAL_CLIP_FEATURE_METHOD,
+    audio_feature_method_for_dataset,
+    is_temporal_clip_feature_method,
+)
 
 
 class VGGSoundDataset(data.Dataset):
@@ -682,12 +687,31 @@ class ContrastiveDataset(data.Dataset):
 
 
 class DefaultCollator(object):
-    def __init__(self, mode='fixed', max_len=60, trim='random', rate_video=16/25, rate_audio=0.96):
+    def __init__(
+        self,
+        mode='fixed',
+        max_len=60,
+        trim='random',
+        rate_video=16/25,
+        rate_audio=0.96,
+        temporal_video_frames=None,
+    ):
         self.mode = mode
         self.max_len = max_len
         self.rate_video = rate_video
         self.rate_audio = rate_audio
         self.trim = trim
+        self.temporal_video_frames = temporal_video_frames
+
+    @staticmethod
+    def _sequence_length(arr):
+        """1 for pooled [D]; T for sequence [T, D]."""
+        arr = np.asarray(arr)
+        if arr.ndim == 1:
+            return 1
+        if arr.ndim == 2:
+            return int(arr.shape[0])
+        raise ValueError(f"Expected 1D or 2D feature array, got shape {arr.shape}")
 
     def get_max_seq_len(self, data):
         maxlen_audio_pos=0
@@ -699,10 +723,10 @@ class DefaultCollator(object):
         for element in data:
             positive=element['positive']
             negative=element['negative']
-            positive_audio_size = 1 if positive['audio'].ndim == 1 else positive['audio'].shape[0]
-            positive_video_size = 1 if positive['video'].ndim == 1 else positive['video'].shape[0]
-            negative_audio_size = 1 if negative['audio'].ndim == 1 else negative['audio'].shape[0]
-            negative_video_size = 1 if negative['video'].ndim == 1 else negative['video'].shape[0]
+            positive_audio_size = self._sequence_length(positive['audio'])
+            positive_video_size = self._sequence_length(positive['video'])
+            negative_audio_size = self._sequence_length(negative['audio'])
+            negative_video_size = self._sequence_length(negative['video'])
             if positive_audio_size > maxlen_audio_pos:
                 maxlen_audio_pos=positive_audio_size
             if negative_audio_size > maxlen_audio_neg:
@@ -725,9 +749,13 @@ class DefaultCollator(object):
         if self.mode == 'max':
             len_audio_pos, len_video_pos, len_audio_neg, len_video_neg = self.get_max_seq_len(data)
         elif self.mode == 'fixed':
-            # takes video features as anchor as more features per second
-            len_video_pos, len_video_neg = self.max_len, self.max_len
-            len_audio_pos, len_audio_neg = round(self.max_len *  self.rate_video * self.rate_audio), round(self.max_len *  self.rate_video * self.rate_audio)
+            if self.temporal_video_frames is not None:
+                len_video_pos = len_video_neg = int(self.temporal_video_frames)
+            else:
+                len_video_pos, len_video_neg = self.max_len, self.max_len
+            len_audio_pos, len_audio_neg = round(
+                len_video_pos * self.rate_video * self.rate_audio
+            ), round(len_video_neg * self.rate_video * self.rate_audio)
 
 
         # init padding mask and timestep arrays
@@ -747,11 +775,10 @@ class DefaultCollator(object):
             positive=data[idx]['positive']
             negative=data[idx]['negative']
 
-            positive_audio_size = 1 if positive['audio'].ndim == 1 else positive['audio'].shape[0]
-            positive_video_size = 1 if positive['video'].ndim == 1 else positive['video'].shape[0]
-            negative_audio_size = 1 if negative['audio'].ndim == 1 else negative['audio'].shape[0]
-            negative_video_size = 1 if negative['video'].ndim == 1 else negative['video'].shape[0]
-
+            positive_audio_size = self._sequence_length(positive['audio'])
+            positive_video_size = self._sequence_length(positive['video'])
+            negative_audio_size = self._sequence_length(negative['audio'])
+            negative_video_size = self._sequence_length(negative['video'])
 
             diff_pos_audio = positive_audio_size - len_audio_pos
             diff_neg_audio = negative_audio_size - len_audio_neg
@@ -830,16 +857,28 @@ class DefaultCollator(object):
         target_final={}
 
         data_final['positive']={}
-        data_final['positive']['audio']=torch.tensor([element['positive']['audio'] for element in data], dtype=torch.float32)
-        data_final['positive']['video']=torch.tensor([element['positive']['video'] for element in data])
+        data_final['positive']['audio']=torch.tensor(
+            [element['positive']['audio'] for element in data], dtype=torch.float32
+        )
+        pos_videos = [element['positive']['video'] for element in data]
+        if pos_videos and np.asarray(pos_videos[0]).ndim == 1:
+            data_final['positive']['video'] = torch.tensor(pos_videos, dtype=torch.float32)
+        else:
+            data_final['positive']['video'] = torch.tensor(pos_videos, dtype=torch.float32)
         data_final['positive']['video_mask']=mask_video_pos
         data_final['positive']['audio_mask']=mask_audio_pos
         data_final['positive']['text']=torch.tensor([element['positive']['text'] for element in data])
         data_final['positive']['url'] =[element['positive']['url'] for element in data]
         data_final['positive']['timestep']={'audio': timestep_audio_pos, 'video':timestep_video_pos}
         data_final['negative']={}
-        data_final['negative']['audio'] = torch.tensor([element['negative']['audio'] for element in data], dtype=torch.float32)
-        data_final['negative']['video'] = torch.tensor([element['negative']['video'] for element in data])
+        data_final['negative']['audio'] = torch.tensor(
+            [element['negative']['audio'] for element in data], dtype=torch.float32
+        )
+        neg_videos = [element['negative']['video'] for element in data]
+        if neg_videos and np.asarray(neg_videos[0]).ndim == 1:
+            data_final['negative']['video'] = torch.tensor(neg_videos, dtype=torch.float32)
+        else:
+            data_final['negative']['video'] = torch.tensor(neg_videos, dtype=torch.float32)
         data_final['negative']['audio_mask']=mask_audio_neg
         data_final['negative']['video_mask']=mask_video_neg
         data_final['negative']['text']=torch.tensor([element['negative']['text'] for element in data])
@@ -1108,20 +1147,33 @@ class UCFDataset(data.Dataset):
         result_text = self.get_data_by_modality(modality="text", dataset_type=dataset_type)
         return {"audio": result_audio, "video": result_video, "text": result_text}
 
+    def _ucf_text_embeddings_dir(self):
+        primary = self.root / "features" / self.feature_extraction_method / "text"
+        if primary.exists():
+            return primary
+        if is_temporal_clip_feature_method(self.feature_extraction_method):
+            fallback = self.root / "features" / audio_feature_method_for_dataset(
+                self.feature_extraction_method
+            ) / "text"
+            if fallback.exists():
+                return fallback
+        return primary
+
     def get_data_by_modality(self, modality, dataset_type="train"):
         result = {"data": [], "target": [], "url": [], 'fps':[]}
         if modality == "text":
+            text_dir = self._ucf_text_embeddings_dir()
             data_raw = np.load(
-                (
-                        self.root / "features" / self.feature_extraction_method / "text/word_embeddings_ucf_normed.npy").resolve(),
-                allow_pickle=True).item()
+                (text_dir / "word_embeddings_ucf_normed.npy").resolve(),
+                allow_pickle=True,
+            ).item()
             data_raw_sorted = dict(sorted(data_raw.items()))
 
             if self.args.use_wavcaps_embeddings == True:
                 data_raw_wavcaps = np.load(
-                    (
-                            self.root / "features" / self.feature_extraction_method / "text/wavcaps_word_embeddings_ucf_normed.npy").resolve(),
-                    allow_pickle=True).item()
+                    (text_dir / "wavcaps_word_embeddings_ucf_normed.npy").resolve(),
+                    allow_pickle=True,
+                ).item()
                 data_raw_wavcaps_sorted = dict(sorted(data_raw_wavcaps.items()))
                 data_raw_list = list(data_raw_sorted.values())
                 data_raw_wavcaps_list = list(data_raw_wavcaps_sorted.values())
@@ -1152,9 +1204,13 @@ class UCFDataset(data.Dataset):
             else:
                 raise AttributeError("Dataset type incompatible. Has to be either train, val or test.")
 
+            feature_method = self.feature_extraction_method
+            if modality == "audio":
+                feature_method = audio_feature_method_for_dataset(self.feature_extraction_method)
             for split_name in split_names:
                 modality_path = (
-                        self.root / "features" / self.feature_extraction_method / f"{modality}/{split_name}").resolve()
+                    self.root / "features" / feature_method / f"{modality}/{split_name}"
+                ).resolve()
                 files = modality_path.iterdir()
                 for file in tqdm(files, total=len(list(modality_path.glob('*'))),
                                  desc=f"{dataset_type}:{modality}:{split_name}"):

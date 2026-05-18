@@ -97,6 +97,7 @@ def get_model_params(
     teacher_gamma_warmup=True,
     teacher_init_ann_path=None,
     teacher_freeze_ann=False,
+    feature_extraction_method="",
     ):
 
     params_model = dict()
@@ -201,4 +202,5 @@ def get_model_params(
     params_model["teacher_gamma_warmup"] = bool(teacher_gamma_warmup)
     params_model["teacher_init_ann_path"] = teacher_init_ann_path
     params_model["teacher_freeze_ann"] = bool(teacher_freeze_ann)
+    params_model["feature_extraction_method"] = str(feature_extraction_method or "")
     return params_model

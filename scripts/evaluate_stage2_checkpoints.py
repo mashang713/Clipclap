@@ -209,6 +209,7 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "teacher_gamma_warmup", True),
         getattr(cfg, "teacher_init_ann_path", None),
         getattr(cfg, "teacher_freeze_ann", False),
+        str(getattr(cfg, "feature_extraction_method", "") or ""),
     )
 
 

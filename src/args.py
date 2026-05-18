@@ -189,10 +189,11 @@ def args_main(*args, **kwargs):
     parser.add_argument(
         "--teacher_snn_arch",
         help="backend_only: SNN from concat(model_input) only (v2). "
-        "full_snn_route: SNN from a/v through trainable SNN frontends then backend (pre-extracted pooled AV only).",
+        "full_snn_route: SNN from a/v through trainable SNN frontends then backend (pre-extracted pooled AV only). "
+        "temporal_video: temporal SNN on [B,T,512] video + pooled audio SNN front, then fusion backend.",
         type=str,
         default="backend_only",
-        choices=("backend_only", "full_snn_route"),
+        choices=("backend_only", "full_snn_route", "temporal_video"),
     )
     parser.add_argument(
         "--teacher_frontend_snn_timesteps",
