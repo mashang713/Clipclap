@@ -818,11 +818,25 @@ class ClipClap_model(nn.Module):
             )
         self.teacher_fusion_warmup_epochs = int(params_model.get("teacher_fusion_warmup_epochs", 0))
         self.teacher_gamma_warmup = bool(params_model.get("teacher_gamma_warmup", True))
+        self.teacher_use_snn_gate = bool(params_model.get("teacher_use_snn_gate", False))
+        self.teacher_gate_mode = str(params_model.get("teacher_gate_mode", "none")).lower()
+        if self.teacher_gate_mode not in ("none", "direct", "residual"):
+            raise ValueError(
+                f"teacher_gate_mode must be 'none', 'direct', or 'residual', got {self.teacher_gate_mode!r}"
+            )
+        self.teacher_sparsity_mode = str(params_model.get("teacher_sparsity_mode", "none")).lower()
+        self.teacher_sparse_lambda = float(params_model.get("teacher_sparse_lambda", 0.0))
+        self._teacher_gate_active = (
+            self.use_teacher_parallel_snn
+            and self.teacher_use_snn_gate
+            and self.teacher_gate_mode in ("direct", "residual")
+        )
         self.teacher_snn_fusion = None
         self.teacher_snn_input_size = None
         self.teacher_audio_snn_front = None
         self.teacher_video_snn_front = None
         self.teacher_video_temporal_snn = None
+        self.teacher_spike_evidence_snn = None
         if self.use_teacher_parallel_snn:
             out_dim = int(self.dim_out)
             hid = int(params_model.get("teacher_snn_hidden_dim", 512))
@@ -831,12 +845,92 @@ class ClipClap_model(nn.Module):
             snn_thr = float(params_model.get("teacher_snn_threshold", 1.0))
             snn_drop = float(params_model.get("teacher_snn_dropout", 0.1))
 
-            if self.teacher_snn_arch == "temporal_video":
-                if self.modality != "both":
-                    raise ValueError("teacher_snn_arch=temporal_video requires modality=both")
-                self.teacher_snn_input_size = int(out_dim * 2)
-                self.teacher_video_temporal_snn = VideoTemporalSNNBranch(
-                    input_size=512,
+            if self._teacher_gate_active:
+                # Round-1: SNN only emits normalized spike evidence for sigmoid gate on theta_o.
+                if self.teacher_snn_arch == "temporal_video":
+                    if self.modality != "both":
+                        raise ValueError("teacher gate + temporal_video requires modality=both")
+                    self.teacher_video_temporal_snn = VideoTemporalSNNBranch(
+                        input_size=512,
+                        hidden_size=hid,
+                        output_size=out_dim,
+                        num_steps=snn_steps,
+                        beta=snn_beta,
+                        threshold=snn_thr,
+                        dropout=snn_drop,
+                        ann_dim=out_dim,
+                        use_ann_gate=False,
+                        gate_strength=0.0,
+                        leak_strength=0.0,
+                    )
+                else:
+                    if self.modality == "both":
+                        fusion_in = 1536
+                    elif self.modality == "audio":
+                        fusion_in = 1024
+                    else:
+                        fusion_in = 512
+                    self.teacher_snn_input_size = int(fusion_in)
+                    self.teacher_spike_evidence_snn = TeacherTrainableSNNBlock(
+                        input_size=self.teacher_snn_input_size,
+                        hidden_size=hid,
+                        output_size=out_dim,
+                        num_steps=snn_steps,
+                        beta=snn_beta,
+                        threshold=snn_thr,
+                        dropout=snn_drop,
+                        ann_dim=out_dim,
+                        use_ann_gate=False,
+                        gate_strength=0.0,
+                        leak_strength=0.0,
+                    )
+                print(
+                    f"  teacher SNN gate mode={self.teacher_gate_mode} "
+                    f"(spike_rate -> sigmoid -> refine theta_o; no SNN cls head)",
+                    flush=True,
+                )
+            else:
+                if self.teacher_snn_arch == "temporal_video":
+                    if self.modality != "both":
+                        raise ValueError("teacher_snn_arch=temporal_video requires modality=both")
+                    self.teacher_snn_input_size = int(out_dim * 2)
+                    self.teacher_video_temporal_snn = VideoTemporalSNNBranch(
+                        input_size=512,
+                        hidden_size=hid,
+                        output_size=out_dim,
+                        num_steps=snn_steps,
+                        beta=snn_beta,
+                        threshold=snn_thr,
+                        dropout=snn_drop,
+                        ann_dim=out_dim,
+                        use_ann_gate=self.teacher_ann_gate_snn,
+                        gate_strength=self.teacher_gate_strength,
+                        leak_strength=self.teacher_leak_strength,
+                    )
+                    self.teacher_audio_snn_front = TeacherTrainableSNNBlock(
+                        input_size=1024,
+                        hidden_size=hid,
+                        output_size=out_dim,
+                        num_steps=snn_steps,
+                        beta=snn_beta,
+                        threshold=snn_thr,
+                        dropout=snn_drop,
+                        ann_dim=out_dim,
+                        use_ann_gate=False,
+                        gate_strength=0.0,
+                        leak_strength=0.0,
+                    )
+                else:
+                    if self.modality == "both":
+                        fusion_in = 1536
+                    elif self.modality == "audio":
+                        fusion_in = 1024
+                    else:
+                        fusion_in = 512
+                    self.teacher_snn_input_size = int(fusion_in)
+
+                self.teacher_snn_fusion = TeacherSNNFusionBranch(
+                    input_size=self.teacher_snn_input_size,
                     hidden_size=hid,
                     output_size=out_dim,
                     num_steps=snn_steps,
@@ -848,42 +942,10 @@ class ClipClap_model(nn.Module):
                     gate_strength=self.teacher_gate_strength,
                     leak_strength=self.teacher_leak_strength,
                 )
-                self.teacher_audio_snn_front = TeacherTrainableSNNBlock(
-                    input_size=1024,
-                    hidden_size=hid,
-                    output_size=out_dim,
-                    num_steps=snn_steps,
-                    beta=snn_beta,
-                    threshold=snn_thr,
-                    dropout=snn_drop,
-                    ann_dim=out_dim,
-                    use_ann_gate=False,
-                    gate_strength=0.0,
-                    leak_strength=0.0,
-                )
-            else:
-                if self.modality == "both":
-                    fusion_in = 1536
-                elif self.modality == "audio":
-                    fusion_in = 1024
-                else:
-                    fusion_in = 512
-                self.teacher_snn_input_size = int(fusion_in)
-
-            self.teacher_snn_fusion = TeacherSNNFusionBranch(
-                input_size=self.teacher_snn_input_size,
-                hidden_size=hid,
-                output_size=out_dim,
-                num_steps=snn_steps,
-                beta=snn_beta,
-                threshold=snn_thr,
-                dropout=snn_drop,
-                ann_dim=out_dim,
-                use_ann_gate=self.teacher_ann_gate_snn,
-                gate_strength=self.teacher_gate_strength,
-                leak_strength=self.teacher_leak_strength,
-            )
-            if self.teacher_snn_arch == "full_snn_route":
+            if (
+                not self._teacher_gate_active
+                and self.teacher_snn_arch == "full_snn_route"
+            ):
                 fh = self.teacher_frontend_snn_hidden_dim
                 fts = self.teacher_frontend_snn_timesteps
                 fbeta = self.teacher_frontend_snn_decay
@@ -1041,9 +1103,127 @@ class ClipClap_model(nn.Module):
             ann_video_source = "pooled"
         return a_pool, v_pool, v_seq, ann_video_source
 
+    @staticmethod
+    def _spike_evidence_for_gate(spike_count, spike_rate):
+        """Use normalized spike rate (count/num_steps) as s_snn; avoids raw-count sigmoid saturation."""
+        if spike_rate is not None:
+            return spike_rate
+        return spike_count
+
+    def _collect_teacher_spike_evidence(self, model_input_ann, v_seq):
+        """Run SNN forward for spike count/rate only (no classification head)."""
+        if self.teacher_snn_arch == "temporal_video":
+            if v_seq is None:
+                raise ValueError(
+                    "teacher gate + temporal_video requires batched video [B,T,512]; "
+                    f"got no temporal sequence"
+                )
+            _, aux = self.teacher_video_temporal_snn(v_seq, ann_context=None)
+        else:
+            if self.teacher_spike_evidence_snn is None:
+                raise RuntimeError("teacher_spike_evidence_snn not initialized for gate mode")
+            _, aux = self.teacher_spike_evidence_snn(model_input_ann)
+        return aux["spike_count"], aux["spike_rate"], aux
+
+    def _apply_snn_gate_on_ann(self, theta_o, spike_count, spike_rate, epoch):
+        """gate = sigmoid(spike_rate); refine theta_o via direct or residual gate."""
+        s_snn = self._spike_evidence_for_gate(spike_count, spike_rate)
+        gate = torch.sigmoid(s_snn)
+        f_ann = theta_o
+        gamma_eff_scalar = float(self._teacher_gamma_effective(epoch))
+        if self.teacher_gate_mode == "direct":
+            f_refined = gate * f_ann
+        elif self.teacher_gate_mode == "residual":
+            gamma_eff = torch.tensor(
+                gamma_eff_scalar, device=theta_o.device, dtype=theta_o.dtype
+            )
+            f_refined = f_ann * (1.0 + gamma_eff * gate)
+        else:
+            f_refined = f_ann
+        eps = 1e-8
+        refine_l2_rel = ((f_refined - f_ann).norm(dim=1) / (f_ann.norm(dim=1) + eps)).mean()
+        gate_diag = {
+            "teacher_gate": gate,
+            "teacher_gate_mean": gate.mean(),
+            "teacher_gate_std": gate.std(unbiased=False),
+            "teacher_gate_min": gate.min(),
+            "teacher_gate_max": gate.max(),
+            "teacher_refine_l2_rel": refine_l2_rel,
+            "teacher_gamma_eff": torch.tensor(gamma_eff_scalar, device=theta_o.device),
+        }
+        return f_refined, gate, gate_diag
+
+    def _teacher_gate_forward(self, model_input_ann, theta_o, a_pool, v_pool, v_seq, epoch):
+        """SNN spike evidence -> sigmoid gate -> refine ANN theta_o (Step 2)."""
+        empty = {
+            "teacher_model_input_ann": None,
+            "teacher_model_input_snn": None,
+            "teacher_theta_ann": None,
+            "teacher_z_snn": None,
+            "teacher_z_fused": None,
+            "teacher_theta_scaled": None,
+            "teacher_spike_count": None,
+            "teacher_spike_rate": None,
+            "teacher_spike_scale": None,
+            "teacher_gate_mean": None,
+            "teacher_fire_rate_mean": None,
+            "teacher_fusion_mode": None,
+            "teacher_gate_active": True,
+            "teacher_gate": None,
+            "teacher_gate_std": None,
+            "teacher_gate_min": None,
+            "teacher_gate_max": None,
+            "teacher_refine_l2_rel": None,
+            "teacher_gamma_eff": None,
+            "teacher_audio_snn_front": None,
+            "teacher_video_snn_front": None,
+            "teacher_video_temporal_z": None,
+            "teacher_audio_front_spike_count": None,
+            "teacher_audio_front_spike_rate": None,
+            "teacher_audio_front_spike_scale": None,
+            "teacher_audio_front_fire_rate_mean": None,
+            "teacher_video_front_spike_count": None,
+            "teacher_video_front_spike_rate": None,
+            "teacher_video_front_spike_scale": None,
+            "teacher_video_front_fire_rate_mean": None,
+        }
+        spike_count, spike_rate, aux = self._collect_teacher_spike_evidence(
+            model_input_ann, v_seq
+        )
+        f_refined, gate, gate_diag = self._apply_snn_gate_on_ann(
+            theta_o, spike_count, spike_rate, epoch
+        )
+        teacher_z_snn_diag = f_refined - theta_o
+        out = dict(empty)
+        out.update(
+            {
+                "teacher_model_input_ann": model_input_ann,
+                "teacher_theta_ann": theta_o,
+                "teacher_z_snn": teacher_z_snn_diag,
+                "teacher_z_fused": f_refined,
+                "teacher_spike_count": spike_count,
+                "teacher_spike_rate": spike_rate,
+                "teacher_fire_rate_mean": aux.get("fire_rate_mean"),
+                "teacher_fusion_mode": self.teacher_gate_mode,
+                "teacher_gate": gate_diag["teacher_gate"],
+                "teacher_gate_mean": gate_diag["teacher_gate_mean"],
+                "teacher_gate_std": gate_diag["teacher_gate_std"],
+                "teacher_gate_min": gate_diag["teacher_gate_min"],
+                "teacher_gate_max": gate_diag["teacher_gate_max"],
+                "teacher_refine_l2_rel": gate_diag["teacher_refine_l2_rel"],
+                "teacher_gamma_eff": gate_diag["teacher_gamma_eff"],
+            }
+        )
+        if self.teacher_snn_arch == "temporal_video":
+            out["teacher_video_front_spike_count"] = spike_count
+            out["teacher_video_front_spike_rate"] = spike_rate
+            out["teacher_video_front_fire_rate_mean"] = aux.get("fire_rate_mean")
+        return out
+
     def _teacher_parallel_forward(self, model_input_ann, theta_o, a_pool, v_pool, v_seq, epoch):
         """Run teacher SNN branch; returns dict of teacher outputs (or Nones if disabled)."""
         empty = {
+            "teacher_gate_active": False,
             "teacher_model_input_ann": None,
             "teacher_model_input_snn": None,
             "teacher_theta_ann": None,
@@ -1067,7 +1247,17 @@ class ClipClap_model(nn.Module):
             "teacher_video_front_spike_rate": None,
             "teacher_video_front_spike_scale": None,
             "teacher_video_front_fire_rate_mean": None,
+            "teacher_gate": None,
+            "teacher_gate_std": None,
+            "teacher_gate_min": None,
+            "teacher_gate_max": None,
+            "teacher_refine_l2_rel": None,
+            "teacher_gamma_eff": None,
         }
+        if self._teacher_gate_active:
+            return self._teacher_gate_forward(
+                model_input_ann, theta_o, a_pool, v_pool, v_seq, epoch
+            )
         if not (self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None):
             return empty
 
@@ -1345,8 +1535,16 @@ class ClipClap_model(nn.Module):
             "teacher_video_front_spike_scale": teacher_video_front_spike_scale,
             "teacher_video_front_fire_rate_mean": teacher_video_front_fire_rate_mean,
             "teacher_parallel_enabled": bool(
-                self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None
+                self._teacher_gate_active
+                or (self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None)
             ),
+            "teacher_gate_active": bool(self._teacher_gate_active),
+            "teacher_gate": t_out.get("teacher_gate") if self._teacher_gate_active else None,
+            "teacher_gate_std": t_out.get("teacher_gate_std"),
+            "teacher_gate_min": t_out.get("teacher_gate_min"),
+            "teacher_gate_max": t_out.get("teacher_gate_max"),
+            "teacher_refine_l2_rel": t_out.get("teacher_refine_l2_rel"),
+            "teacher_gamma_eff": t_out.get("teacher_gamma_eff"),
         }
 
 
@@ -1362,7 +1560,7 @@ class ClipClap_model(nn.Module):
         return float(self.lambda_proto)
 
     def _teacher_gamma_effective(self, epoch):
-        """Ramped fusion weight for teacher_z_fused; epoch None uses full gamma (e.g. eval get_embeddings)."""
+        """Gamma for legacy z_snn fusion or gate-residual modulation on theta_o; epoch None => full gamma."""
         g = float(self.teacher_snn_gamma)
         if not self.use_teacher_parallel_snn:
             return g
@@ -1394,6 +1592,7 @@ class ClipClap_model(nn.Module):
         l_snn_teacher = torch.tensor(0.0, device=device)
         l_fused_teacher = torch.tensor(0.0, device=device)
         teacher_parallel_ce_used = False
+        teacher_gate_ce_used = False
 
         theta_det = theta_o.detach()
         # theta_o distribution diagnostics (always log; fused embedding stats). Must be based on detached theta_o.
@@ -1439,15 +1638,33 @@ class ClipClap_model(nn.Module):
 
         if self.cross_entropy_loss==True:
             Cross_loss=nn.CrossEntropyLoss()
+            use_teacher_gate_ce = (
+                outputs.get("teacher_gate_active")
+                and teacher_z_fused is not None
+                and embedding_cross_entropy is not None
+            )
             use_teacher_parallel_ce = (
                 self.use_teacher_parallel_snn
                 and outputs.get("teacher_parallel_enabled")
+                and not outputs.get("teacher_gate_active")
                 and teacher_z_snn is not None
                 and teacher_z_fused is not None
                 and embedding_cross_entropy is not None
             )
             if embedding_cross_entropy is None:
                 l_ce = torch.tensor(0., device=device)
+            elif use_teacher_gate_ce:
+                teacher_gate_ce_used = True
+                teacher_parallel_ce_used = True
+
+                def _teacher_ce_logits(z):
+                    return torch.matmul(z, embedding_cross_entropy.t())
+
+                l_fused_teacher = Cross_loss(
+                    _teacher_ce_logits(teacher_z_fused), gt_cross_entropy
+                )
+                l_ann_teacher = Cross_loss(_teacher_ce_logits(theta_o), gt_cross_entropy)
+                l_ce = l_fused_teacher + self.teacher_snn_beta * l_ann_teacher
             elif use_teacher_parallel_ce:
                 teacher_parallel_ce_used = True
 
@@ -1488,7 +1705,9 @@ class ClipClap_model(nn.Module):
         loss_original = l_rec + l_reg + l_ce
         if (
             self.use_teacher_parallel_snn
+            and not outputs.get("teacher_gate_active")
             and self.teacher_fire_rate_reg > 0.0
+            and self.teacher_sparse_lambda <= 0.0
             and outputs.get("teacher_spike_rate") is not None
         ):
             sr = outputs["teacher_spike_rate"]
@@ -1497,6 +1716,7 @@ class ClipClap_model(nn.Module):
 
         if (
             self.use_teacher_parallel_snn
+            and not outputs.get("teacher_gate_active")
             and self.teacher_snn_arch in ("full_snn_route", "temporal_video")
             and self.teacher_frontend_fire_rate_reg > 0.0
         ):
@@ -1633,13 +1853,42 @@ class ClipClap_model(nn.Module):
         }
         if teacher_parallel_ce_used:
             loss_dict["Loss/loss_teacher_ann"] = l_ann_teacher.detach().cpu()
-            loss_dict["Loss/loss_teacher_snn"] = l_snn_teacher.detach().cpu()
             loss_dict["Loss/loss_teacher_fused"] = l_fused_teacher.detach().cpu()
             loss_dict["Loss/loss_teacher_ce"] = l_ce.detach().cpu()
             loss_dict["Diag/teacher_snn_gamma"] = torch.tensor(float(self.teacher_snn_gamma))
-            loss_dict["Diag/teacher_snn_alpha"] = torch.tensor(float(self.teacher_snn_alpha))
             loss_dict["Diag/teacher_snn_beta"] = torch.tensor(float(self.teacher_snn_beta))
-        if outputs.get("teacher_parallel_enabled") and outputs.get("teacher_spike_rate") is not None:
+            if teacher_gate_ce_used:
+                loss_dict["Loss/loss_teacher_snn"] = torch.tensor(0.0)
+                loss_dict["Diag/teacher_gate_ce_used"] = torch.tensor(1.0)
+            else:
+                loss_dict["Loss/loss_teacher_snn"] = l_snn_teacher.detach().cpu()
+                loss_dict["Diag/teacher_gate_ce_used"] = torch.tensor(0.0)
+                loss_dict["Diag/teacher_snn_alpha"] = torch.tensor(float(self.teacher_snn_alpha))
+        if outputs.get("teacher_gate_active"):
+            if outputs.get("teacher_gate_mean") is not None:
+                loss_dict["Diag/gate_mean"] = outputs["teacher_gate_mean"].detach().cpu()
+            if outputs.get("teacher_gate_std") is not None:
+                loss_dict["Diag/gate_std"] = outputs["teacher_gate_std"].detach().cpu()
+            if outputs.get("teacher_gate_min") is not None:
+                loss_dict["Diag/gate_min"] = outputs["teacher_gate_min"].detach().cpu()
+            if outputs.get("teacher_gate_max") is not None:
+                loss_dict["Diag/gate_max"] = outputs["teacher_gate_max"].detach().cpu()
+            if outputs.get("teacher_spike_rate") is not None:
+                loss_dict["Diag/spike_rate_mean"] = outputs["teacher_spike_rate"].mean().detach().cpu()
+            if outputs.get("teacher_spike_count") is not None:
+                loss_dict["Diag/spike_count_mean"] = outputs["teacher_spike_count"].mean().detach().cpu()
+            if outputs.get("teacher_refine_l2_rel") is not None:
+                loss_dict["Diag/refine_l2_rel"] = outputs["teacher_refine_l2_rel"].detach().cpu()
+            if outputs.get("teacher_gamma_eff") is not None:
+                loss_dict["Diag/gamma_eff"] = outputs["teacher_gamma_eff"].detach().cpu()
+            loss_dict["Diag/teacher_gate_mode_direct"] = torch.tensor(
+                1.0 if self.teacher_gate_mode == "direct" else 0.0
+            )
+        if (
+            outputs.get("teacher_parallel_enabled")
+            and outputs.get("teacher_spike_rate") is not None
+            and not outputs.get("teacher_gate_active")
+        ):
             loss_dict["Diag/teacher_fire_rate_mean"] = outputs["teacher_fire_rate_mean"].detach().cpu()
             loss_dict["Diag/teacher_gate_mean"] = outputs["teacher_gate_mean"].detach().cpu()
             loss_dict["Diag/teacher_spike_scale_mean"] = outputs["teacher_spike_scale"].mean().detach().cpu()
@@ -1650,9 +1899,11 @@ class ClipClap_model(nn.Module):
                 loss_dict["Loss/loss_teacher_fire_rate"] = loss_teacher_fire.detach().cpu()
             else:
                 loss_dict["Loss/loss_teacher_fire_rate"] = torch.tensor(0.0)
-        if outputs.get("teacher_parallel_enabled") and str(
-            outputs.get("teacher_snn_arch") or ""
-        ) in ("full_snn_route", "temporal_video"):
+        if (
+            outputs.get("teacher_parallel_enabled")
+            and not outputs.get("teacher_gate_active")
+            and str(outputs.get("teacher_snn_arch") or "") in ("full_snn_route", "temporal_video")
+        ):
             if loss_teacher_front_fire is not None:
                 loss_dict["Loss/loss_teacher_front_fire"] = loss_teacher_front_fire.detach().cpu()
             else:
@@ -1782,18 +2033,21 @@ class ClipClap_model(nn.Module):
             return z_av_snn, z_av_snn, theta_w
 
         eval_z = theta_o
-        if self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None:
+        if self.use_teacher_parallel_snn and (
+            self._teacher_gate_active or self.teacher_snn_fusion is not None
+        ):
             t_out = self._teacher_parallel_forward(
                 model_input_ann, theta_o, a_pool, v_pool, v_seq, epoch=None
             )
             teacher_z_snn = t_out["teacher_z_snn"]
             teacher_z_fused = t_out["teacher_z_fused"]
-            if teacher_z_snn is not None and teacher_z_fused is not None:
+            if teacher_z_fused is not None:
                 r = self.teacher_eval_repr
                 if r == "ann":
                     eval_z = theta_o
                 elif r == "snn":
-                    eval_z = teacher_z_snn
+                    # Diagnostic only (e.g. f_refined - theta_o), not a classification head.
+                    eval_z = teacher_z_snn if teacher_z_snn is not None else theta_o
                 elif r == "fused":
                     eval_z = teacher_z_fused
                 else:

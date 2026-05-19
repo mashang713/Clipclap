@@ -69,6 +69,10 @@ def get_model_params(
     proto_conf_margin=0.0,
     debug_print_shapes=False,
     use_teacher_parallel_snn=False,
+    teacher_use_snn_gate=False,
+    teacher_gate_mode="none",
+    teacher_sparsity_mode="none",
+    teacher_sparse_lambda=0.0,
     teacher_snn_timesteps=4,
     teacher_snn_gamma=0.1,
     teacher_snn_alpha=0.1,
@@ -174,6 +178,10 @@ def get_model_params(
     params_model["proto_conf_margin"] = float(proto_conf_margin)
     params_model["debug_print_shapes"] = bool(debug_print_shapes)
     params_model["use_teacher_parallel_snn"] = bool(use_teacher_parallel_snn)
+    params_model["teacher_use_snn_gate"] = bool(teacher_use_snn_gate)
+    params_model["teacher_gate_mode"] = str(teacher_gate_mode).lower()
+    params_model["teacher_sparsity_mode"] = str(teacher_sparsity_mode).lower()
+    params_model["teacher_sparse_lambda"] = float(teacher_sparse_lambda)
     params_model["teacher_snn_timesteps"] = int(teacher_snn_timesteps)
     params_model["teacher_snn_gamma"] = float(teacher_snn_gamma)
     params_model["teacher_snn_alpha"] = float(teacher_snn_alpha)

@@ -187,6 +187,36 @@ def args_main(*args, **kwargs):
         default=False,
     )
     parser.add_argument(
+        "--teacher_use_snn_gate",
+        help="Step-2: SNN provides normalized spike evidence -> sigmoid gate -> refine theta_o. "
+        "No SNN classification head. Requires use_teacher_parallel_snn=true.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
+        "--teacher_gate_mode",
+        help="SNN gate on ANN features: none (ANN only), direct (gate*theta_o), "
+        "residual (theta_o*(1+teacher_snn_gamma*gate)).",
+        type=str,
+        default="none",
+        choices=("none", "direct", "residual"),
+    )
+    parser.add_argument(
+        "--teacher_sparsity_mode",
+        help="Placeholder for future sparsity schedules; only 'none' is implemented in round 1.",
+        type=str,
+        default="none",
+        choices=("none", "weak", "warmup", "semantic"),
+    )
+    parser.add_argument(
+        "--teacher_sparse_lambda",
+        help="Sparsity regularizer weight; 0 disables (default for round-1 gate experiments).",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
         "--teacher_snn_arch",
         help="backend_only: SNN from concat(model_input) only (v2). "
         "full_snn_route: SNN from a/v through trainable SNN frontends then backend (pre-extracted pooled AV only). "
@@ -298,7 +328,8 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_snn_gamma",
-        help="Fusion weight: z_fused = theta_o + gamma * z_snn (after warmup, gamma_eff ramps to this).",
+        help="Legacy add/gated_scale: weight on teacher_z_snn. Gate residual: strength in "
+        "theta_o*(1+gamma_eff*sigmoid(spike_rate)); gamma_eff may ramp via teacher_fusion_warmup_epochs.",
         type=float,
         default=0.1,
     )
