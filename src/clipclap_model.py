@@ -770,7 +770,8 @@ class ClipClap_model(nn.Module):
             params_model.get("feature_extraction_method", "")
         )
         self.use_temporal_video_features = (
-            self.feature_extraction_method == "cls_features_temporal_16"
+            self.feature_extraction_method
+            in ("cls_features_temporal_16", "cls_features_static_temporal_16")
             or self.teacher_snn_arch == "temporal_video"
         )
         self.teacher_frontend_snn_timesteps = int(
@@ -966,6 +967,7 @@ class ClipClap_model(nn.Module):
         self.fake_snn = FakeSNNConversion(timesteps=self.snn_timesteps)
         self.debug_print_shapes = bool(params_model.get("debug_print_shapes", False))
         self._forward_shape_debug_entry_printed = False
+        self._forward_shape_debug_av_printed = False
         self._forward_shape_debug_printed = False
 
     def optimize_scheduler(self, value):
@@ -996,19 +998,31 @@ class ClipClap_model(nn.Module):
             raise NotImplementedError
 
     @staticmethod
-    def _prepare_av_for_forward(a, v):
-        """Pooled AV for ANN; optional [B,T,D] video sequence for temporal teacher SNN."""
+    def _prepare_av_for_forward(a, v, video_static=None):
+        """Pooled AV for ANN; optional [B,T,D] temporal video for teacher SNN."""
         a = a.float()
         v = v.float()
         v_seq = None
+        v_static_pool = None
+        if video_static is not None:
+            vs = video_static.float()
+            if vs.dim() == 3 and vs.shape[1] == 1:
+                v_static_pool = vs.squeeze(1)
+            elif vs.dim() == 2:
+                v_static_pool = vs
+            else:
+                raise ValueError(
+                    f"video_static must be [B,D] or [B,1,D], got {tuple(vs.shape)}"
+                )
+
         if v.dim() == 3:
             if v.shape[1] == 1:
                 v_pool = v.squeeze(1)
             else:
                 v_seq = v
-                v_pool = v.mean(dim=1)
+                v_pool = v_static_pool if v_static_pool is not None else v.mean(dim=1)
         elif v.dim() == 2:
-            v_pool = v
+            v_pool = v_static_pool if v_static_pool is not None else v
         else:
             raise ValueError(f"video must be [B,D] or [B,T,D], got {tuple(v.shape)}")
 
@@ -1018,7 +1032,14 @@ class ClipClap_model(nn.Module):
             a_pool = a
         else:
             raise ValueError(f"audio must be [B,D] or [B,T,D], got {tuple(a.shape)}")
-        return a_pool, v_pool, v_seq
+
+        if v_static_pool is not None and v_seq is not None:
+            ann_video_source = "static"
+        elif v_seq is not None:
+            ann_video_source = "temporal_mean"
+        else:
+            ann_video_source = "pooled"
+        return a_pool, v_pool, v_seq, ann_video_source
 
     def _teacher_parallel_forward(self, model_input_ann, theta_o, a_pool, v_pool, v_seq, epoch):
         """Run teacher SNN branch; returns dict of teacher outputs (or Nones if disabled)."""
@@ -1146,7 +1167,7 @@ class ClipClap_model(nn.Module):
             out["teacher_video_front_fire_rate_mean"] = aux_v["fire_rate_mean"]
         return out
 
-    def forward(self, a, v, w, masks, timesteps, epoch=None):
+    def forward(self, a, v, w, masks, timesteps, epoch=None, video_static=None):
         w_cls_raw = w
 
         def _shape_desc(tag, x, lines_out):
@@ -1169,15 +1190,34 @@ class ClipClap_model(nn.Module):
                 "[ClipClap_model.forward] one-time debug (BEFORE b, _ = a.shape / torch.cat / O_enc):",
             ]
             _shape_desc("a (raw forward input)", a, pre_lines)
-            _shape_desc("v (raw forward input)", v, pre_lines)
+            _shape_desc("v (raw temporal video)", v, pre_lines)
+            _shape_desc("video_static", video_static, pre_lines)
             _shape_desc("w (forward arg cls_embedding, raw)", w_cls_raw, pre_lines)
             _shape_desc("masks", masks, pre_lines)
             _shape_desc("timesteps", timesteps, pre_lines)
             print("\n".join(pre_lines), flush=True)
 
-        a_pool, v_pool, v_seq = self._prepare_av_for_forward(a, v)
+        a_pool, v_pool, v_seq, ann_video_source = self._prepare_av_for_forward(
+            a, v, video_static=video_static
+        )
         b = a_pool.shape[0]
         device = a_pool.device
+
+        if self.debug_print_shapes and not self._forward_shape_debug_av_printed:
+            self._forward_shape_debug_av_printed = True
+            av_lines = [
+                "[ClipClap_model.forward] AV routing (after _prepare_av_for_forward):",
+                f"  v raw temporal shape: {tuple(v.shape)}",
+                f"  video_static shape: {tuple(video_static.shape) if video_static is not None else None}",
+                f"  ANN video source: {ann_video_source}",
+                f"  v_pool (ANN video) shape: {tuple(v_pool.shape)}",
+            ]
+            if v_seq is not None:
+                av_lines.append(f"  teacher video SNN input shape: {tuple(v_seq.shape)}")
+            else:
+                av_lines.append("  teacher video SNN input: None (no temporal sequence)")
+            print("\n".join(av_lines), flush=True)
+
         if self.modality == 'audio':
             w = w[:,512:]
             model_input_ann = a_pool
@@ -1636,10 +1676,30 @@ class ClipClap_model(nn.Module):
 
     # cls_numeric = class index
     # cls_embedding = w2v embedding of the target
-    def optimize_params(self, audio, video, cls_numeric, cls_embedding, masks, timesteps, embedding_crossentropy, optimize=False, epoch=None):
+    def optimize_params(
+        self,
+        audio,
+        video,
+        cls_numeric,
+        cls_embedding,
+        masks,
+        timesteps,
+        embedding_crossentropy,
+        optimize=False,
+        epoch=None,
+        video_static=None,
+    ):
         if not self.is_sam_optim:
             # Forward pass
-            outputs = self.forward(audio, video, cls_embedding, masks, timesteps, epoch=epoch)
+            outputs = self.forward(
+                audio,
+                video,
+                cls_embedding,
+                masks,
+                timesteps,
+                epoch=epoch,
+                video_static=video_static,
+            )
 
             # Backward pass
             loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy, cls_numeric, epoch=epoch)
@@ -1653,7 +1713,15 @@ class ClipClap_model(nn.Module):
             # SAM optimizer requires two forward / backward
 
             enable_running_stats(self)
-            outputs = self.forward(audio, video, cls_embedding, masks, timesteps, epoch=epoch)
+            outputs = self.forward(
+                audio,
+                video,
+                cls_embedding,
+                masks,
+                timesteps,
+                epoch=epoch,
+                video_static=video_static,
+            )
             loss_numeric, loss = self.compute_loss(outputs, embedding_crossentropy, cls_numeric, epoch=epoch)
 
             if optimize:
@@ -1664,15 +1732,25 @@ class ClipClap_model(nn.Module):
 
                 # second forward-backward step
                 disable_running_stats(self)
-                outputs_second = self.forward(audio, video, cls_embedding, masks, timesteps, epoch=epoch)
+                outputs_second = self.forward(
+                    audio,
+                    video,
+                    cls_embedding,
+                    masks,
+                    timesteps,
+                    epoch=epoch,
+                    video_static=video_static,
+                )
                 second_loss, _ = self.compute_loss(outputs_second, embedding_crossentropy, cls_numeric, epoch=epoch)
                 second_loss.backward()
                 self.optimizer_gen.second_step(zero_grad=True)
 
         return loss_numeric, loss
 
-    def get_embeddings(self, a, v, w, masks, timesteps):
-        a_pool, v_pool, v_seq = self._prepare_av_for_forward(a, v)
+    def get_embeddings(self, a, v, w, masks, timesteps, video_static=None):
+        a_pool, v_pool, v_seq, _ann_src = self._prepare_av_for_forward(
+            a, v, video_static=video_static
+        )
 
         if self.modality == 'audio':
             w = w[:,512:]

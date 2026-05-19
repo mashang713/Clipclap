@@ -10,8 +10,9 @@ from tqdm import tqdm
 
 from src.utils import read_features, get_class_names
 from src.feature_constants import (
-    TEMPORAL_CLIP_FEATURE_METHOD,
+    STATIC_TEMPORAL_CLIP_FEATURE_METHOD,
     audio_feature_method_for_dataset,
+    is_static_temporal_clip_feature_method,
     is_temporal_clip_feature_method,
 )
 
@@ -675,10 +676,16 @@ class ContrastiveDataset(data.Dataset):
         else:
             raise AttributeError("Dataset_split has to be either train, val, train_val or test.")
 
-        data = {
-            "positive": {"audio": x_a1, "video": x_v1, "text": x_t1, "url": x_url1, "fps": fps_1},
-            "negative": {"audio": x_a2, "video": x_v2, "text": x_t2, "url": x_url2, "fps": fps_2}
-        }
+        pos = {"audio": x_a1, "video": x_v1, "text": x_t1, "url": x_url1, "fps": fps_1}
+        neg = {"audio": x_a2, "video": x_v2, "text": x_t2, "url": x_url2, "fps": fps_2}
+        if "video_static" in self.data:
+            if self.dataset_split in ("train", "train_val"):
+                pos["video_static"] = self.data["video_static"][index]
+                neg["video_static"] = self.data["video_static"][negative_index]
+            else:
+                pos["video_static"] = self.data["video_static"][self.val_pairs[index][0]]
+                neg["video_static"] = self.data["video_static"][self.val_pairs[index][1]]
+        data = {"positive": pos, "negative": neg}
         target = {
             "positive": positive_target,
             "negative": negative_target
@@ -870,6 +877,11 @@ class DefaultCollator(object):
         data_final['positive']['text']=torch.tensor([element['positive']['text'] for element in data])
         data_final['positive']['url'] =[element['positive']['url'] for element in data]
         data_final['positive']['timestep']={'audio': timestep_audio_pos, 'video':timestep_video_pos}
+        if data and 'video_static' in data[0]['positive']:
+            data_final['positive']['video_static'] = torch.tensor(
+                [element['positive']['video_static'] for element in data],
+                dtype=torch.float32,
+            )
         data_final['negative']={}
         data_final['negative']['audio'] = torch.tensor(
             [element['negative']['audio'] for element in data], dtype=torch.float32
@@ -884,6 +896,11 @@ class DefaultCollator(object):
         data_final['negative']['text']=torch.tensor([element['negative']['text'] for element in data])
         data_final['negative']['url']=[element['positive']['url'] for element in data]
         data_final['negative']['timestep']={'audio':timestep_audio_neg, 'video':timestep_video_neg}
+        if data and 'video_static' in data[0]['negative']:
+            data_final['negative']['video_static'] = torch.tensor(
+                [element['negative']['video_static'] for element in data],
+                dtype=torch.float32,
+            )
 
         target_final['positive']=torch.tensor([element['positive'] for element in target])
         target_final['negative']=torch.tensor([element['negative'] for element in target])
@@ -892,6 +909,10 @@ class DefaultCollator(object):
 
 
 class UCFDataset(data.Dataset):
+
+    @property
+    def has_video_static(self):
+        return "video_static" in self.data
 
     @property
     def map_embeddings_target(self):
@@ -930,14 +951,17 @@ class UCFDataset(data.Dataset):
     @property
     def all_data(self):
         classes_mask = np.where(np.isin(self.data["audio"]["target"], self.classes))[0]
-        return {
+        out = {
             "audio": np.array(self.data["audio"]["data"])[classes_mask],
             "video": np.array(self.data["video"]["data"])[classes_mask],
             "text": np.array(self.data["text"]["data"])[sorted(self.classes.astype(int))],
             "target": np.array(self.data["audio"]["target"])[classes_mask],
             "url": np.array(self.data["audio"]["url"])[classes_mask],
-            "fps": np.array(self.data['audio']['fps'])[classes_mask]
+            "fps": np.array(self.data['audio']['fps'])[classes_mask],
         }
+        if self.has_video_static:
+            out["video_static"] = np.array(self.data["video_static"]["data"])[classes_mask]
+        return out
 
     @property
     def features_processed_folder(self):
@@ -1092,6 +1116,13 @@ class UCFDataset(data.Dataset):
     def preprocess(self):
         if self._check_exists():
             return
+
+        if is_static_temporal_clip_feature_method(self.feature_extraction_method):
+            raise RuntimeError(
+                f"feature_extraction_method={STATIC_TEMPORAL_CLIP_FEATURE_METHOD} requires merged "
+                "processed pkls. Run: python scripts/build_ucf_static_temporal16_processed_pkls.py "
+                f"--root_dir {self.root}"
+            )
 
         (self.features_processed_folder / self.feature_extraction_method).mkdir(parents=True, exist_ok=True)
 

@@ -263,18 +263,25 @@ def evaluate_dataset_baseline(dataset_tuple, model, device, distance_fn, best_be
         timesteps['positive'] = {'audio': data['positive']['timestep']['audio'], 'video': data['positive']['timestep']['video']}
 
 
+        from src.model_inputs import get_positive_video_static, maybe_zscore
+
         all_data = (
             data_a, data_v, data_num, data_t, masks['positive'], timesteps['positive']
         )
+        data_v_static = get_positive_video_static(data['positive'], device)
         try:
             if args.z_score_inputs:
-                all_data = tuple([(x - torch.mean(x)) / torch.sqrt(torch.var(x)) for x in all_data])
+                all_data = tuple(maybe_zscore(x, True) for x in all_data)
+                data_v_static = maybe_zscore(data_v_static, True)
         except AttributeError:
             print("Namespace has no fitting attribute. Continuing")
 
         model.eval()
         with torch.no_grad():
-            audio_emb, video_emb, emb_cls = model.get_embeddings(all_data[0], all_data[1], all_data[3], all_data[4], all_data[5])
+            audio_emb, video_emb, emb_cls = model.get_embeddings(
+                all_data[0], all_data[1], all_data[3], all_data[4], all_data[5],
+                video_static=data_v_static,
+            )
             accumulated_audio_emb.append(audio_emb)
             accumulated_video_emb.append(video_emb)
             outputs_all = (audio_emb, video_emb, emb_cls)

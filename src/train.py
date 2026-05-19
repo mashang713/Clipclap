@@ -4,6 +4,7 @@ import torch
 import sys
 
 from src.metrics import MeanClassAccuracy
+from src.model_inputs import get_positive_video_static, maybe_zscore
 from src.utils import check_best_loss, check_best_score, save_best_model
 
 
@@ -124,20 +125,30 @@ def train_step(data_loader, model, criterion, optimizer, epoch, epochs, writer, 
             x_p_a, x_p_v, x_p_num, x_p_t, masks['positive'], timesteps['positive']
 
         )
+        x_p_v_static = get_positive_video_static(p, device)
 
         if args.z_score_inputs:
-            inputs = tuple([(x - torch.mean(x)) / torch.sqrt(torch.var(x)) for x in inputs])
+            inputs = tuple(maybe_zscore(x, True) for x in inputs)
+            x_p_v_static = maybe_zscore(x_p_v_static, True)
 
 
         if args.cross_entropy_loss==True:
             for i in range(inputs[2].shape[0]):
                 inputs[2][i] = mapping_dict[(inputs[2][[i]]).item()]
         if args.cross_entropy_loss==True:
-            loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=embeddings, optimize=True, epoch=epoch)
+            loss, loss_details = model.optimize_params(
+                *inputs, embedding_crossentropy=embeddings, optimize=True, epoch=epoch,
+                video_static=x_p_v_static,
+            )
         else:
-            loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=None, optimize=True, epoch=epoch)
+            loss, loss_details = model.optimize_params(
+                *inputs, embedding_crossentropy=None, optimize=True, epoch=epoch,
+                video_static=x_p_v_static,
+            )
         batch_loss_details=add_loss_details(loss_details, batch_loss_details)
-        audio_emb, video_emb, emb_cls=model.get_embeddings(inputs[0], inputs[1], inputs[3], inputs[4], inputs[5])
+        audio_emb, video_emb, emb_cls=model.get_embeddings(
+            inputs[0], inputs[1], inputs[3], inputs[4], inputs[5], video_static=x_p_v_static,
+        )
         outputs=torch.stack([video_emb, emb_cls], dim=0)
 
         batch_loss += loss.item()
@@ -219,19 +230,29 @@ def val_step(data_loader, model, criterion, epoch, epochs, writer, device, metri
             inputs = (
                 x_p_a, x_p_v, x_p_num, x_p_t, masks['positive'], timesteps['positive']
             )
+            x_p_v_static = get_positive_video_static(p, device)
 
             if args.z_score_inputs:
-                inputs = tuple([(x - torch.mean(x)) / torch.sqrt(torch.var(x)) for x in inputs])
+                inputs = tuple(maybe_zscore(x, True) for x in inputs)
+                x_p_v_static = maybe_zscore(x_p_v_static, True)
 
             if args.cross_entropy_loss == True:
                 for i in range(inputs[2].shape[0]):
                     inputs[2][i] = mapping_dict[(inputs[2][[i]]).item()]
             if args.cross_entropy_loss == True:
-                loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=embeddings, optimize=False, epoch=epoch)
+                loss, loss_details = model.optimize_params(
+                    *inputs, embedding_crossentropy=embeddings, optimize=False, epoch=epoch,
+                    video_static=x_p_v_static,
+                )
             else:
-                loss, loss_details = model.optimize_params(*inputs, embedding_crossentropy=None, optimize=False, epoch=epoch)
+                loss, loss_details = model.optimize_params(
+                    *inputs, embedding_crossentropy=None, optimize=False, epoch=epoch,
+                    video_static=x_p_v_static,
+                )
             batch_loss_details = add_loss_details(loss_details, batch_loss_details)
-            audio_emb, video_emb, emb_cls = model.get_embeddings(inputs[0], inputs[1], inputs[3], inputs[4], inputs[5])
+            audio_emb, video_emb, emb_cls = model.get_embeddings(
+                inputs[0], inputs[1], inputs[3], inputs[4], inputs[5], video_static=x_p_v_static,
+            )
             outputs = (video_emb, emb_cls)
 
 
