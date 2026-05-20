@@ -331,6 +331,10 @@ def main(args):
         getattr(args, "teacher_snn_sigmoid_ann_snn_ce", False),
         getattr(args, "teacher_snn_sigmoid_ann_snn_ce_weight", 1.0),
         getattr(args, "teacher_snn_only", False),
+        getattr(args, "teacher_snn_use_video_delta", True),
+        getattr(args, "teacher_snn_time_weight", "linear"),
+        getattr(args, "teacher_snn_proto_align_lambda", 0.0),
+        getattr(args, "teacher_snn_proto_align_type", "cosine"),
         str(getattr(args, "feature_extraction_method", "") or ""),
     )
     if args.new_model_sequence==True:

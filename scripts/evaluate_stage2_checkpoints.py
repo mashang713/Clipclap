@@ -222,6 +222,10 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "teacher_snn_sigmoid_ann_snn_ce", False),
         getattr(cfg, "teacher_snn_sigmoid_ann_snn_ce_weight", 1.0),
         getattr(cfg, "teacher_snn_only", False),
+        getattr(cfg, "teacher_snn_use_video_delta", True),
+        getattr(cfg, "teacher_snn_time_weight", "linear"),
+        getattr(cfg, "teacher_snn_proto_align_lambda", 0.0),
+        getattr(cfg, "teacher_snn_proto_align_type", "cosine"),
         str(getattr(cfg, "feature_extraction_method", "") or ""),
     )
 

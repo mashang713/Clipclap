@@ -110,6 +110,10 @@ def get_model_params(
     teacher_snn_sigmoid_ann_snn_ce=False,
     teacher_snn_sigmoid_ann_snn_ce_weight=1.0,
     teacher_snn_only=False,
+    teacher_snn_use_video_delta=True,
+    teacher_snn_time_weight="linear",
+    teacher_snn_proto_align_lambda=0.0,
+    teacher_snn_proto_align_type="cosine",
     feature_extraction_method="",
     ):
 
@@ -230,5 +234,9 @@ def get_model_params(
         teacher_snn_sigmoid_ann_snn_ce_weight
     )
     params_model["teacher_snn_only"] = bool(teacher_snn_only)
+    params_model["teacher_snn_use_video_delta"] = bool(teacher_snn_use_video_delta)
+    params_model["teacher_snn_time_weight"] = str(teacher_snn_time_weight)
+    params_model["teacher_snn_proto_align_lambda"] = float(teacher_snn_proto_align_lambda)
+    params_model["teacher_snn_proto_align_type"] = str(teacher_snn_proto_align_type)
     params_model["feature_extraction_method"] = str(feature_extraction_method or "")
     return params_model

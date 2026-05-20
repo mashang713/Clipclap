@@ -171,6 +171,10 @@ def get_evaluation(args):
         getattr(config, "teacher_snn_sigmoid_ann_snn_ce", False),
         getattr(config, "teacher_snn_sigmoid_ann_snn_ce_weight", 1.0),
         getattr(config, "teacher_snn_only", False),
+        getattr(config, "teacher_snn_use_video_delta", True),
+        getattr(config, "teacher_snn_time_weight", "linear"),
+        getattr(config, "teacher_snn_proto_align_lambda", 0.0),
+        getattr(config, "teacher_snn_proto_align_type", "cosine"),
         str(getattr(config, "feature_extraction_method", "") or ""),
     )
 

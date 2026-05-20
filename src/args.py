@@ -278,10 +278,11 @@ def args_main(*args, **kwargs):
     parser.add_argument(
         "--teacher_snn_fusion_mode",
         help="Teacher fusion: 'add' (theta_o + gamma*z_snn), 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn), "
-        "or 'snn_sigmoid_ann' (z_fused=theta_o_refined; gate refines theta_o via use_snn_sigmoid_ann_gate).",
+        "or 'snn_sigmoid_ann' (z_fused=theta_o_refined; gate refines theta_o), "
+        "or 'snn_only' (clean SNN: audio+temporal video -> z_snn, no ANN refine).",
         type=str,
         default="add",
-        choices=("add", "gated_scale", "snn_sigmoid_ann"),
+        choices=("add", "gated_scale", "snn_sigmoid_ann", "snn_only"),
     )
     parser.add_argument(
         "--teacher_sigmoid_centered",
@@ -346,6 +347,34 @@ def args_main(*args, **kwargs):
         nargs="?",
         const=True,
         default=False,
+    )
+    parser.add_argument(
+        "--teacher_snn_use_video_delta",
+        help="snn_only: concat [frame, frame-frame_prev] (1024-d) per timestep before video SNN.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+    )
+    parser.add_argument(
+        "--teacher_snn_time_weight",
+        help="snn_only temporal weighting: uniform, linear, exp_decay, or learned.",
+        type=str,
+        default="linear",
+        choices=("uniform", "linear", "exp_decay", "learned"),
+    )
+    parser.add_argument(
+        "--teacher_snn_proto_align_lambda",
+        help="Weight on SNN-text alignment (1 - cosine(z_snn, theta_w)) for snn_only / teacher_snn_only.",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--teacher_snn_proto_align_type",
+        help="SNN-text alignment loss: cosine (default) or mse.",
+        type=str,
+        default="cosine",
+        choices=("cosine", "mse"),
     )
     parser.add_argument(
         "--teacher_ann_gate_snn",
