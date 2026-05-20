@@ -277,10 +277,19 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_snn_fusion_mode",
-        help="Teacher fusion: 'add' (theta_o + gamma*z_snn) or 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn).",
+        help="Teacher fusion: 'add' (theta_o + gamma*z_snn), 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn), "
+        "or 'snn_sigmoid_ann' (SNN-only spike intensity -> sigmoid mask modulates theta_o; no ANN gate on SNN).",
         type=str,
         default="add",
-        choices=("add", "gated_scale"),
+        choices=("add", "gated_scale", "snn_sigmoid_ann"),
+    )
+    parser.add_argument(
+        "--teacher_sigmoid_centered",
+        help="snn_sigmoid_ann: if true, mask=2*sigmoid(snn_int)-1 in [-1,1]; else mask=sigmoid(snn_int).",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
     )
     parser.add_argument(
         "--teacher_ann_gate_snn",
@@ -328,8 +337,8 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_snn_gamma",
-        help="Legacy add/gated_scale: weight on teacher_z_snn. Gate residual: strength in "
-        "theta_o*(1+gamma_eff*sigmoid(spike_rate)); gamma_eff may ramp via teacher_fusion_warmup_epochs.",
+        help="add/gated_scale: weight on teacher_z_snn. snn_sigmoid_ann: strength in "
+        "theta_o + gamma_eff * mask * theta_o; gamma_eff may ramp via teacher_fusion_warmup_epochs.",
         type=float,
         default=0.1,
     )
