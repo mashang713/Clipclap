@@ -1241,6 +1241,13 @@ class ClipClap_model(nn.Module):
                 "use teacher_eval_repr=snn",
                 flush=True,
             )
+        if self._use_clean_snn_only_loss() and (self.rec_loss or self.reg_loss):
+            print(
+                "  warning: snn_only ignores rec_loss/reg_loss/cycle_loss and uses "
+                "clean SNN CE + proto align.",
+                flush=True,
+            )
+            self._snn_only_legacy_loss_warned = True
         self._teacher_gate_active = (
             self.use_teacher_parallel_snn
             and self.teacher_use_snn_gate
@@ -1461,6 +1468,7 @@ class ClipClap_model(nn.Module):
                     f"  TeacherSNNOnlyMultimodalBranch: audio[1024] + video[B,T,512]"
                     f" delta={self.teacher_snn_use_video_delta}"
                     f" time_weight={self.teacher_snn_time_weight}\n"
+                    f"  loss = CE(z_snn) + {self.teacher_snn_proto_align_lambda} * proto_align(z_snn, theta_w)\n"
                     f"  teacher_snn_proto_align_lambda={self.teacher_snn_proto_align_lambda}\n"
                     f"  teacher_snn_only={self.teacher_snn_only}",
                     flush=True,
@@ -1534,6 +1542,7 @@ class ClipClap_model(nn.Module):
         self._forward_shape_debug_printed = False
         self._snn_sigmoid_ann_debug_printed = False
         self._teacher_snn_only_pred_debug_printed = False
+        self._snn_only_legacy_loss_warned = False
         self.register_buffer(
             "_snn_sigmoid_ann_step",
             torch.zeros((), dtype=torch.long),
@@ -2340,6 +2349,33 @@ class ClipClap_model(nn.Module):
             return g * min(1.0, float(epoch) / float(self.teacher_fusion_warmup_epochs))
         return g
 
+    def _use_clean_snn_only_loss(self):
+        return bool(
+            self.use_teacher_parallel_snn
+            and (self.teacher_snn_only or self.teacher_snn_fusion_mode == "snn_only")
+        )
+
+    def _warn_snn_only_ignores_legacy_losses(self):
+        if self._snn_only_legacy_loss_warned or not self._use_clean_snn_only_loss():
+            return
+        if not (self.rec_loss or self.reg_loss):
+            return
+        self._snn_only_legacy_loss_warned = True
+        print(
+            "  warning: snn_only ignores rec_loss/reg_loss/cycle_loss and uses "
+            "clean SNN CE + proto align.",
+            flush=True,
+        )
+
+    def _teacher_snn_proto_align_loss(self, teacher_z_snn, theta_w, device):
+        if teacher_z_snn is None or theta_w is None:
+            return torch.tensor(0.0, device=device)
+        if self.teacher_snn_proto_align_type == "mse":
+            return self.MSE_loss(teacher_z_snn, theta_w)
+        zn = F.normalize(teacher_z_snn, dim=1)
+        wn = F.normalize(theta_w, dim=1)
+        return (1.0 - (zn * wn).sum(dim=1)).mean()
+
     def compute_loss(self, outputs, embeddings_crossentropy, gt_cross_entropy, epoch=None):
 
         theta_w = outputs['theta_w']
@@ -2498,76 +2534,84 @@ class ClipClap_model(nn.Module):
         else:
             l_ce = torch.tensor(0., device=device)
 
-        if self.reg_loss==True:
-            l_reg = (
-                self.MSE_loss(z_for_pred, theta_w)
-            )
+        use_clean_snn_only = self._use_clean_snn_only_loss()
+        if use_clean_snn_only:
+            self._warn_snn_only_ignores_legacy_losses()
+            l_reg = torch.tensor(0.0, device=device)
+            l_rec = torch.tensor(0.0, device=device)
         else:
-            l_reg = torch.tensor(0., device=device)
-
-
-        if self.rec_loss == True:
-            l_rec = (
-                    self.MSE_loss(w, rho_o) +
-                    self.MSE_loss(w, rho_w)
-            )
-        else:
-            l_rec = torch.tensor(0., device=device)
+            if self.reg_loss == True:
+                l_reg = self.MSE_loss(z_for_pred, theta_w)
+            else:
+                l_reg = torch.tensor(0.0, device=device)
+            if self.rec_loss == True:
+                l_rec = self.MSE_loss(w, rho_o) + self.MSE_loss(w, rho_w)
+            else:
+                l_rec = torch.tensor(0.0, device=device)
 
         loss_snn_proto_align = torch.tensor(0.0, device=device)
-        if (
-            self.use_teacher_parallel_snn
-            and teacher_z_snn is not None
-            and self.teacher_snn_proto_align_lambda > 0.0
-            and (
-                self.teacher_snn_only or self.teacher_snn_fusion_mode == "snn_only"
+        loss_snn_ce = torch.tensor(0.0, device=device)
+        loss_clean_snn_only = torch.tensor(0.0, device=device)
+
+        if use_clean_snn_only:
+            z_snn_for_loss = (
+                teacher_z_snn if teacher_z_snn is not None else teacher_z_fused
             )
-        ):
-            tw = outputs.get("theta_w")
-            if tw is not None:
-                if self.teacher_snn_proto_align_type == "mse":
-                    loss_snn_proto_align = self.MSE_loss(teacher_z_snn, tw)
-                else:
-                    zn = F.normalize(teacher_z_snn, dim=1)
-                    wn = F.normalize(tw, dim=1)
-                    loss_snn_proto_align = (1.0 - (zn * wn).sum(dim=1)).mean()
-
-        loss_original = l_rec + l_reg + l_ce
-        if self.teacher_snn_proto_align_lambda > 0.0:
-            loss_original = loss_original + self.teacher_snn_proto_align_lambda * loss_snn_proto_align
-        if (
-            self.use_teacher_parallel_snn
-            and not outputs.get("teacher_gate_active")
-            and self.teacher_fire_rate_reg > 0.0
-            and self.teacher_sparse_lambda <= 0.0
-            and outputs.get("teacher_spike_rate") is not None
-        ):
-            sr = outputs["teacher_spike_rate"]
-            loss_teacher_fire = ((sr - self.teacher_fire_rate_target) ** 2).mean()
-            loss_original = loss_original + self.teacher_fire_rate_reg * loss_teacher_fire
-
-        if (
-            self.use_teacher_parallel_snn
-            and not outputs.get("teacher_gate_active")
-            and self.teacher_snn_arch in ("full_snn_route", "temporal_video")
-            and self.teacher_frontend_fire_rate_reg > 0.0
-        ):
-            parts = []
-            ar = outputs.get("teacher_audio_front_spike_rate")
-            vr = outputs.get("teacher_video_front_spike_rate")
-            tar = self.teacher_frontend_fire_rate_target
-            if ar is not None:
-                parts.append(((ar - tar) ** 2).mean())
-            if vr is not None:
-                parts.append(((vr - tar) ** 2).mean())
-            if parts:
-                loss_teacher_front_fire = torch.stack(parts).mean()
-                loss_original = (
-                    loss_original
-                    + self.teacher_frontend_fire_rate_reg * loss_teacher_front_fire
+            if z_snn_for_loss is None:
+                raise RuntimeError(
+                    "clean SNN-only loss requires teacher_z_snn / teacher_z_fused"
                 )
+            loss_snn_proto_align = self._teacher_snn_proto_align_loss(
+                teacher_z_snn, outputs.get("theta_w"), device
+            )
+            if self.cross_entropy_loss and embedding_cross_entropy is not None:
+                loss_snn_ce = Cross_loss(
+                    torch.matmul(z_snn_for_loss, embedding_cross_entropy.t()),
+                    gt_cross_entropy,
+                )
+                teacher_snn_only_ce_used = True
+                l_ce = loss_snn_ce
+                l_snn_teacher = loss_snn_ce
+            loss_clean_snn_only = loss_snn_ce + (
+                self.teacher_snn_proto_align_lambda * loss_snn_proto_align
+            )
+            loss_original = loss_clean_snn_only
+            loss_total = loss_clean_snn_only
+        else:
+            loss_original = l_rec + l_reg + l_ce
+            if (
+                self.use_teacher_parallel_snn
+                and not outputs.get("teacher_gate_active")
+                and self.teacher_fire_rate_reg > 0.0
+                and self.teacher_sparse_lambda <= 0.0
+                and outputs.get("teacher_spike_rate") is not None
+            ):
+                sr = outputs["teacher_spike_rate"]
+                loss_teacher_fire = ((sr - self.teacher_fire_rate_target) ** 2).mean()
+                loss_original = loss_original + self.teacher_fire_rate_reg * loss_teacher_fire
 
-        loss_total = loss_original
+            if (
+                self.use_teacher_parallel_snn
+                and not outputs.get("teacher_gate_active")
+                and self.teacher_snn_arch in ("full_snn_route", "temporal_video")
+                and self.teacher_frontend_fire_rate_reg > 0.0
+            ):
+                parts = []
+                ar = outputs.get("teacher_audio_front_spike_rate")
+                vr = outputs.get("teacher_video_front_spike_rate")
+                tar = self.teacher_frontend_fire_rate_target
+                if ar is not None:
+                    parts.append(((ar - tar) ** 2).mean())
+                if vr is not None:
+                    parts.append(((vr - tar) ** 2).mean())
+                if parts:
+                    loss_teacher_front_fire = torch.stack(parts).mean()
+                    loss_original = (
+                        loss_original
+                        + self.teacher_frontend_fire_rate_reg * loss_teacher_front_fire
+                    )
+
+            loss_total = loss_original
         loss_proto_kd = torch.tensor(0.0, device=device)
         loss_proto_kd_weighted_tensor = torch.tensor(0.0, device=device)
         lambda_proto_eff_t = torch.tensor(0.0, device=device)
@@ -2578,7 +2622,7 @@ class ClipClap_model(nn.Module):
         top1_agree = torch.tensor(0.0, device=device)
 
         # Prototype-preserving losses: teacher sims from theta_o.detach(); student from z_av_snn. Prototypes unchanged.
-        if self.use_snn_conversion and (z_av_snn is not None):
+        if self.use_snn_conversion and (z_av_snn is not None) and not use_clean_snn_only:
             feature_mse = self.MSE_loss(z_av_snn, z_av_ann)
 
             proto = embedding_cross_entropy  # (K, dim_out)
@@ -2693,7 +2737,34 @@ class ClipClap_model(nn.Module):
                     gt_cross_entropy,
                 )
             )
-        if teacher_snn_only_ce_used:
+        if use_clean_snn_only:
+            loss_dict["Loss/teacher_snn_only_ce"] = loss_snn_ce.detach().cpu()
+            loss_dict["Loss/teacher_snn_proto_align"] = loss_snn_proto_align.detach().cpu()
+            loss_dict["Loss/total_clean_snn_only"] = loss_clean_snn_only.detach().cpu()
+            loss_dict["Loss/total_loss"] = loss_clean_snn_only.detach().cpu()
+            loss_dict["Loss/original_loss"] = loss_clean_snn_only.detach().cpu()
+            loss_dict["Loss/cross_entropy"] = loss_snn_ce.detach().cpu()
+            loss_dict["Loss/loss_reg"] = torch.tensor(0.0)
+            loss_dict["Loss/loss_cmd_rec"] = torch.tensor(0.0)
+            loss_dict["Loss/loss_teacher_snn"] = loss_snn_ce.detach().cpu()
+            loss_dict["Loss/loss_teacher_ce"] = loss_snn_ce.detach().cpu()
+            loss_dict["Diag/teacher_snn_only"] = torch.tensor(1.0)
+            loss_dict["Diag/teacher_snn_proto_align_lambda"] = torch.tensor(
+                float(self.teacher_snn_proto_align_lambda)
+            )
+            loss_dict["Diag/clean_snn_only_loss"] = torch.tensor(1.0)
+            if teacher_snn_only_ce_used:
+                loss_dict.update(
+                    self._teacher_snn_only_pred_diag(
+                        teacher_z_snn, embedding_cross_entropy, gt_cross_entropy
+                    )
+                )
+            src = outputs.get("teacher_snn_input_source")
+            if src is not None:
+                loss_dict["Diag/teacher_snn_input_source_id"] = torch.tensor(
+                    1.0 if "temporal" in str(src) else 0.0
+                )
+        elif teacher_snn_only_ce_used:
             loss_dict.update(
                 self._teacher_snn_only_pred_diag(
                     teacher_z_snn, embedding_cross_entropy, gt_cross_entropy
@@ -2710,11 +2781,6 @@ class ClipClap_model(nn.Module):
                 )
         elif self.teacher_snn_fusion_mode == "snn_only":
             loss_dict["Diag/teacher_snn_only"] = torch.tensor(0.0)
-        if self.teacher_snn_proto_align_lambda > 0.0:
-            loss_dict["Loss/teacher_snn_proto_align"] = loss_snn_proto_align.detach().cpu()
-            loss_dict["Diag/teacher_snn_proto_align_lambda"] = torch.tensor(
-                float(self.teacher_snn_proto_align_lambda)
-            )
         if teacher_parallel_ce_used:
             loss_dict["Loss/loss_teacher_ann"] = l_ann_teacher.detach().cpu()
             loss_dict["Loss/loss_teacher_fused"] = l_fused_teacher.detach().cpu()
