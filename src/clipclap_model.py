@@ -420,8 +420,8 @@ class TeacherSNNFusionBranch(nn.Module):
 
 class TeacherSNNSigmoidAnnBranch(nn.Module):
     """
-    SNN-only modulation path: pooled AV input -> per-dim spike intensity [B, out_dim].
-    No theta_o / ann_gate input; snn_int is projected from the branch's own spike_rate.
+    SNN-only path: pooled AV input -> z_snn [B, out_dim] and snn_gate_logits [B, out_dim].
+    Gate logits come from spike_rate (no ANN input). Fusion: theta_o_refined + gamma*z_snn.
     """
 
     def __init__(
@@ -451,9 +451,9 @@ class TeacherSNNSigmoidAnnBranch(nn.Module):
         self.snn_int_proj = nn.Linear(output_size, output_size)
 
     def forward(self, x):
-        _z, aux = self.block(x, ann_context=None)
+        z_snn, aux = self.block(x, ann_context=None)
         snn_int = self.snn_int_proj(aux["spike_rate"])
-        return snn_int, aux
+        return z_snn, snn_int, aux
 
 
 def _fuse_linear_bn1d(linear: nn.Linear, bn: nn.BatchNorm1d):
@@ -840,6 +840,8 @@ class ClipClap_model(nn.Module):
                 f"got {self.teacher_snn_fusion_mode!r}"
             )
         self.teacher_sigmoid_centered = bool(params_model.get("teacher_sigmoid_centered", True))
+        if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
+            self.teacher_sigmoid_centered = False
         self.teacher_ann_gate_snn = bool(params_model.get("teacher_ann_gate_snn", False))
         if self.teacher_snn_fusion_mode == "snn_sigmoid_ann" and self.teacher_ann_gate_snn:
             print(
@@ -876,6 +878,15 @@ class ClipClap_model(nn.Module):
             )
         self.teacher_sparsity_mode = str(params_model.get("teacher_sparsity_mode", "none")).lower()
         self.teacher_sparse_lambda = float(params_model.get("teacher_sparse_lambda", 0.0))
+        self.use_snn_sigmoid_ann_gate = bool(params_model.get("use_snn_sigmoid_ann_gate", False))
+        self.snn_sigmoid_ann_warmup_steps = int(params_model.get("snn_sigmoid_ann_warmup_steps", 500))
+        self.snn_sigmoid_ann_ramp_steps = max(
+            1, int(params_model.get("snn_sigmoid_ann_ramp_steps", 1500))
+        )
+        self.snn_sigmoid_ann_lambda = float(params_model.get("snn_sigmoid_ann_lambda", 0.3))
+        self.snn_sigmoid_ann_detach_gate = bool(
+            params_model.get("snn_sigmoid_ann_detach_gate", True)
+        )
         self._teacher_gate_active = (
             self.use_teacher_parallel_snn
             and self.teacher_use_snn_gate
@@ -1059,7 +1070,13 @@ class ClipClap_model(nn.Module):
             if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
                 print(
                     f"  teacher_snn_fusion_mode=snn_sigmoid_ann\n"
-                    f"  teacher_sigmoid_centered={self.teacher_sigmoid_centered}\n"
+                    f"  fusion: z_fused = theta_o_refined + gamma_eff * z_snn\n"
+                    f"  theta_o_refined = (1-s)*theta_o + s*(sigmoid(snn_gate_logits)*theta_o)\n"
+                    f"  use_snn_sigmoid_ann_gate={self.use_snn_sigmoid_ann_gate}\n"
+                    f"  snn_sigmoid_ann_warmup_steps={self.snn_sigmoid_ann_warmup_steps}\n"
+                    f"  snn_sigmoid_ann_ramp_steps={self.snn_sigmoid_ann_ramp_steps}\n"
+                    f"  snn_sigmoid_ann_lambda={self.snn_sigmoid_ann_lambda}\n"
+                    f"  snn_sigmoid_ann_detach_gate={self.snn_sigmoid_ann_detach_gate}\n"
                     f"  teacher_ann_gate_snn={self.teacher_ann_gate_snn}\n"
                     f"  teacher_freeze_ann={self.teacher_freeze_ann}\n"
                     f"  teacher_snn_gamma={self.teacher_snn_gamma}",
@@ -1101,6 +1118,75 @@ class ClipClap_model(nn.Module):
         self._forward_shape_debug_entry_printed = False
         self._forward_shape_debug_av_printed = False
         self._forward_shape_debug_printed = False
+        self._snn_sigmoid_ann_debug_printed = False
+        self.register_buffer(
+            "_snn_sigmoid_ann_step",
+            torch.zeros((), dtype=torch.long),
+            persistent=False,
+        )
+
+    def _refine_theta_o_snn_sigmoid_ann(self, theta_o_ann, snn_gate_logits):
+        """SNN sigmoid gate refines ANN theta_o (never multiplies z_snn)."""
+        theta_o_refined = theta_o_ann
+        gate = None
+        gate_strength = torch.tensor(0.0, device=theta_o_ann.device, dtype=theta_o_ann.dtype)
+        if self.use_snn_sigmoid_ann_gate:
+            if self.training:
+                self._snn_sigmoid_ann_step += 1
+            step = self._snn_sigmoid_ann_step.float()
+            warmup = float(self.snn_sigmoid_ann_warmup_steps)
+            ramp = float(self.snn_sigmoid_ann_ramp_steps)
+            gate_strength = ((step - warmup) / ramp).clamp(0.0, 1.0)
+            gate_strength = gate_strength * float(self.snn_sigmoid_ann_lambda)
+            gate = torch.sigmoid(snn_gate_logits.float())
+            if self.snn_sigmoid_ann_detach_gate:
+                gate = gate.detach()
+            theta_o_refined = (1.0 - gate_strength) * theta_o_ann + gate_strength * (
+                gate * theta_o_ann
+            )
+        return theta_o_refined, gate, gate_strength
+
+    def _debug_print_snn_sigmoid_ann_once(
+        self,
+        theta_o,
+        z_snn,
+        snn_gate_logits,
+        gate,
+        gate_strength,
+        theta_o_refined,
+        z_fused,
+    ):
+        if not self.debug_print_shapes or self._snn_sigmoid_ann_debug_printed:
+            return
+        self._snn_sigmoid_ann_debug_printed = True
+
+        def _rg(x):
+            return x.requires_grad if torch.is_tensor(x) else None
+
+        lines = [
+            "[SNN-SIGMOID-ANN] use",
+            f"[SNN-SIGMOID-ANN] theta_o shape={tuple(theta_o.shape)} dtype={theta_o.dtype} requires_grad={_rg(theta_o)}",
+            f"[SNN-SIGMOID-ANN] z_snn shape={tuple(z_snn.shape)} dtype={z_snn.dtype} requires_grad={_rg(z_snn)}",
+            f"[SNN-SIGMOID-ANN] snn_gate_logits shape={tuple(snn_gate_logits.shape)} dtype={snn_gate_logits.dtype} requires_grad={_rg(snn_gate_logits)}",
+        ]
+        if gate is not None:
+            lines.append(
+                f"[SNN-SIGMOID-ANN] gate shape={tuple(gate.shape)} dtype={gate.dtype} requires_grad={_rg(gate)}"
+            )
+            lines.append(
+                f"[SNN-SIGMOID-ANN] gate min/mean/max={float(gate.min()):.4f}/{float(gate.mean()):.4f}/{float(gate.max()):.4f}"
+            )
+        else:
+            lines.append("[SNN-SIGMOID-ANN] gate=None (use_snn_sigmoid_ann_gate=False)")
+        gs = float(gate_strength) if torch.is_tensor(gate_strength) else gate_strength
+        lines.append(f"[SNN-SIGMOID-ANN] gate_strength={gs:.6f}")
+        lines.append(
+            f"[SNN-SIGMOID-ANN] theta_o_refined shape={tuple(theta_o_refined.shape)} dtype={theta_o_refined.dtype} requires_grad={_rg(theta_o_refined)}"
+        )
+        lines.append(
+            f"[SNN-SIGMOID-ANN] z_fused shape={tuple(z_fused.shape)} dtype={z_fused.dtype} requires_grad={_rg(z_fused)}"
+        )
+        print("\n".join(lines), flush=True)
 
     def optimize_scheduler(self, value):
         if self.lr_scheduler:
@@ -1323,6 +1409,10 @@ class ClipClap_model(nn.Module):
             "teacher_gate_max": None,
             "teacher_refine_l2_rel": None,
             "teacher_gamma_eff": None,
+            "teacher_theta_o_ann": None,
+            "teacher_theta_o_refined": None,
+            "teacher_snn_gate_strength": None,
+            "teacher_snn_gate_logits": None,
         }
         if self._teacher_gate_active:
             return self._teacher_gate_forward(
@@ -1375,14 +1465,35 @@ class ClipClap_model(nn.Module):
         )
         gamma_eff = self._teacher_gamma_effective(epoch)
         teacher_fusion_mode = self.teacher_snn_fusion_mode
-        teacher_mask = None
+        teacher_gate = None
+        teacher_snn_int = None
+        teacher_theta_o_ann = None
+        teacher_theta_o_refined = None
+        teacher_snn_gate_strength = None
+        teacher_snn_gate_logits = None
         if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
-            snn_int, teacher_aux = self.teacher_snn_fusion(model_input_snn)
-            gate = torch.sigmoid(snn_int)
-            teacher_mask = (2.0 * gate - 1.0) if self.teacher_sigmoid_centered else gate
-            teacher_z_fused = theta_o + gamma_eff * teacher_mask * theta_o
-            teacher_z_snn = snn_int
+            z_snn, snn_int, teacher_aux = self.teacher_snn_fusion(model_input_snn)
+            snn_gate_logits = snn_int
+            teacher_snn_int = snn_int
+            teacher_snn_gate_logits = snn_gate_logits
+            theta_o_ann = theta_o
+            teacher_theta_o_ann = theta_o_ann
+            theta_o_refined, teacher_gate, teacher_snn_gate_strength = (
+                self._refine_theta_o_snn_sigmoid_ann(theta_o_ann, snn_gate_logits)
+            )
+            teacher_theta_o_refined = theta_o_refined
+            teacher_z_fused = theta_o_refined + gamma_eff * z_snn
+            teacher_z_snn = z_snn
             teacher_theta_scaled = None
+            self._debug_print_snn_sigmoid_ann_once(
+                theta_o_ann,
+                z_snn,
+                snn_gate_logits,
+                teacher_gate,
+                teacher_snn_gate_strength,
+                theta_o_refined,
+                teacher_z_fused,
+            )
         else:
             ann_ctx = theta_o if self._teacher_snn_ann_gate_enabled else None
             teacher_z_snn, teacher_aux = self.teacher_snn_fusion(
@@ -1414,7 +1525,12 @@ class ClipClap_model(nn.Module):
                 "teacher_gate_mean": teacher_aux["gate_mean"],
                 "teacher_fire_rate_mean": teacher_aux["fire_rate_mean"],
                 "teacher_fusion_mode": teacher_fusion_mode,
-                "teacher_mask": teacher_mask,
+                "teacher_gate": teacher_gate,
+                "teacher_snn_int": teacher_snn_int,
+                "teacher_theta_o_ann": teacher_theta_o_ann,
+                "teacher_theta_o_refined": teacher_theta_o_refined,
+                "teacher_snn_gate_strength": teacher_snn_gate_strength,
+                "teacher_snn_gate_logits": teacher_snn_gate_logits,
                 "teacher_gamma_eff": gamma_eff,
                 "teacher_audio_snn_front": teacher_audio_snn_front,
                 "teacher_video_snn_front": teacher_video_snn_front,
@@ -1620,13 +1736,17 @@ class ClipClap_model(nn.Module):
                 or (self.use_teacher_parallel_snn and self.teacher_snn_fusion is not None)
             ),
             "teacher_gate_active": bool(self._teacher_gate_active),
-            "teacher_gate": t_out.get("teacher_gate") if self._teacher_gate_active else None,
+            "teacher_gate": t_out.get("teacher_gate"),
             "teacher_gate_std": t_out.get("teacher_gate_std"),
             "teacher_gate_min": t_out.get("teacher_gate_min"),
             "teacher_gate_max": t_out.get("teacher_gate_max"),
             "teacher_refine_l2_rel": t_out.get("teacher_refine_l2_rel"),
             "teacher_gamma_eff": t_out.get("teacher_gamma_eff"),
-            "teacher_mask": t_out.get("teacher_mask"),
+            "teacher_snn_int": t_out.get("teacher_snn_int"),
+            "teacher_theta_o_ann": t_out.get("teacher_theta_o_ann"),
+            "teacher_theta_o_refined": t_out.get("teacher_theta_o_refined"),
+            "teacher_snn_gate_strength": t_out.get("teacher_snn_gate_strength"),
+            "teacher_snn_gate_logits": t_out.get("teacher_snn_gate_logits"),
         }
 
 
@@ -1987,8 +2107,12 @@ class ClipClap_model(nn.Module):
             loss_dict["Diag/teacher_fusion_mode_snn_sigmoid_ann"] = torch.tensor(
                 1.0 if fusion_mode == "snn_sigmoid_ann" else 0.0
             )
-            if outputs.get("teacher_mask") is not None:
-                loss_dict["Diag/teacher_mask_mean"] = outputs["teacher_mask"].mean().detach().cpu()
+            if outputs.get("teacher_gate") is not None:
+                loss_dict["Diag/teacher_gate_mean"] = outputs["teacher_gate"].mean().detach().cpu()
+            if outputs.get("teacher_snn_gate_strength") is not None:
+                loss_dict["Diag/snn_sigmoid_ann_gate_strength"] = (
+                    outputs["teacher_snn_gate_strength"].detach().cpu()
+                )
             if outputs.get("teacher_gamma_eff") is not None:
                 loss_dict["Diag/teacher_gamma_eff_forward"] = torch.tensor(
                     float(outputs["teacher_gamma_eff"])

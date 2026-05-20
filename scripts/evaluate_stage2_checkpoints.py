@@ -214,6 +214,11 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "teacher_gamma_warmup", True),
         getattr(cfg, "teacher_init_ann_path", None),
         getattr(cfg, "teacher_freeze_ann", False),
+        getattr(cfg, "use_snn_sigmoid_ann_gate", False),
+        getattr(cfg, "snn_sigmoid_ann_warmup_steps", 500),
+        getattr(cfg, "snn_sigmoid_ann_ramp_steps", 1500),
+        getattr(cfg, "snn_sigmoid_ann_lambda", 0.3),
+        getattr(cfg, "snn_sigmoid_ann_detach_gate", True),
         str(getattr(cfg, "feature_extraction_method", "") or ""),
     )
 

@@ -278,14 +278,48 @@ def args_main(*args, **kwargs):
     parser.add_argument(
         "--teacher_snn_fusion_mode",
         help="Teacher fusion: 'add' (theta_o + gamma*z_snn), 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn), "
-        "or 'snn_sigmoid_ann' (SNN-only spike intensity -> sigmoid mask modulates theta_o; no ANN gate on SNN).",
+        "or 'snn_sigmoid_ann' (theta_o_refined + gamma*z_snn; gate refines theta_o via use_snn_sigmoid_ann_gate).",
         type=str,
         default="add",
         choices=("add", "gated_scale", "snn_sigmoid_ann"),
     )
     parser.add_argument(
         "--teacher_sigmoid_centered",
-        help="snn_sigmoid_ann: if true, mask=2*sigmoid(snn_int)-1 in [-1,1]; else mask=sigmoid(snn_int).",
+        help="Legacy flag; ignored when teacher_snn_fusion_mode=snn_sigmoid_ann.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+    )
+    parser.add_argument(
+        "--use_snn_sigmoid_ann_gate",
+        help="snn_sigmoid_ann: SNN sigmoid gate refines theta_o (not z_snn); fused = theta_o_refined + gamma*z_snn.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
+        "--snn_sigmoid_ann_warmup_steps",
+        help="Optimizer steps before ramping SNN sigmoid gate on theta_o (ANN/SNN learn separately first).",
+        type=int,
+        default=500,
+    )
+    parser.add_argument(
+        "--snn_sigmoid_ann_ramp_steps",
+        help="Steps to ramp gate strength from 0 to snn_sigmoid_ann_lambda after warmup.",
+        type=int,
+        default=1500,
+    )
+    parser.add_argument(
+        "--snn_sigmoid_ann_lambda",
+        help="Max gate blend strength on theta_o after ramp (0..1 scale before multiply with sigmoid gate).",
+        type=float,
+        default=0.3,
+    )
+    parser.add_argument(
+        "--snn_sigmoid_ann_detach_gate",
+        help="If true, detach sigmoid gate so fused CE does not backprop into SNN gate logits initially.",
         type=str_to_bool,
         nargs="?",
         const=True,
@@ -338,7 +372,7 @@ def args_main(*args, **kwargs):
     parser.add_argument(
         "--teacher_snn_gamma",
         help="add/gated_scale: weight on teacher_z_snn. snn_sigmoid_ann: strength in "
-        "theta_o + gamma_eff * mask * theta_o; gamma_eff may ramp via teacher_fusion_warmup_epochs.",
+        "theta_o_refined + gamma_eff * z_snn; gamma_eff may ramp via teacher_fusion_warmup_epochs.",
         type=float,
         default=0.1,
     )

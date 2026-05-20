@@ -163,6 +163,11 @@ def get_evaluation(args):
         getattr(config, "teacher_gamma_warmup", True),
         getattr(config, "teacher_init_ann_path", None),
         getattr(config, "teacher_freeze_ann", False),
+        getattr(config, "use_snn_sigmoid_ann_gate", False),
+        getattr(config, "snn_sigmoid_ann_warmup_steps", 500),
+        getattr(config, "snn_sigmoid_ann_ramp_steps", 1500),
+        getattr(config, "snn_sigmoid_ann_lambda", 0.3),
+        getattr(config, "snn_sigmoid_ann_detach_gate", True),
         str(getattr(config, "feature_extraction_method", "") or ""),
     )
 

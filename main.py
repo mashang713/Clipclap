@@ -323,6 +323,11 @@ def main(args):
         getattr(args, "teacher_gamma_warmup", True),
         getattr(args, "teacher_init_ann_path", None),
         getattr(args, "teacher_freeze_ann", False),
+        getattr(args, "use_snn_sigmoid_ann_gate", False),
+        getattr(args, "snn_sigmoid_ann_warmup_steps", 500),
+        getattr(args, "snn_sigmoid_ann_ramp_steps", 1500),
+        getattr(args, "snn_sigmoid_ann_lambda", 0.3),
+        getattr(args, "snn_sigmoid_ann_detach_gate", True),
         str(getattr(args, "feature_extraction_method", "") or ""),
     )
     if args.new_model_sequence==True:
