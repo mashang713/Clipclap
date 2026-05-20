@@ -278,7 +278,7 @@ def args_main(*args, **kwargs):
     parser.add_argument(
         "--teacher_snn_fusion_mode",
         help="Teacher fusion: 'add' (theta_o + gamma*z_snn), 'gated_scale' (spike-rate scaled theta_o + gamma*z_snn), "
-        "or 'snn_sigmoid_ann' (theta_o_refined + gamma*z_snn; gate refines theta_o via use_snn_sigmoid_ann_gate).",
+        "or 'snn_sigmoid_ann' (z_fused=theta_o_refined; gate refines theta_o via use_snn_sigmoid_ann_gate).",
         type=str,
         default="add",
         choices=("add", "gated_scale", "snn_sigmoid_ann"),
@@ -293,7 +293,7 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--use_snn_sigmoid_ann_gate",
-        help="snn_sigmoid_ann: SNN sigmoid gate refines theta_o (not z_snn); fused = theta_o_refined + gamma*z_snn.",
+        help="snn_sigmoid_ann: SNN sigmoid gate refines theta_o; fused = theta_o_refined (z_snn diagnostic only).",
         type=str_to_bool,
         nargs="?",
         const=True,
@@ -371,8 +371,8 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_snn_gamma",
-        help="add/gated_scale: weight on teacher_z_snn. snn_sigmoid_ann: strength in "
-        "theta_o_refined + gamma_eff * z_snn; gamma_eff may ramp via teacher_fusion_warmup_epochs.",
+        help="add/gated_scale: weight on teacher_z_snn. snn_sigmoid_ann: gate ramp via "
+        "snn_sigmoid_ann_* steps (fused=theta_o_refined only; teacher_snn_gamma unused in pure mode).",
         type=float,
         default=0.1,
     )

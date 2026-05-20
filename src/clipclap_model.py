@@ -421,7 +421,7 @@ class TeacherSNNFusionBranch(nn.Module):
 class TeacherSNNSigmoidAnnBranch(nn.Module):
     """
     SNN-only path: pooled AV input -> z_snn [B, out_dim] and snn_gate_logits [B, out_dim].
-    Gate logits come from spike_rate (no ANN input). Fusion: theta_o_refined + gamma*z_snn.
+    Gate logits come from spike_rate (no ANN input). Pure refine: z_fused = theta_o_refined only.
     """
 
     def __init__(
@@ -1070,7 +1070,7 @@ class ClipClap_model(nn.Module):
             if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
                 print(
                     f"  teacher_snn_fusion_mode=snn_sigmoid_ann\n"
-                    f"  fusion: z_fused = theta_o_refined + gamma_eff * z_snn\n"
+                    f"  fusion: z_fused = theta_o_refined (z_snn diagnostic only)\n"
                     f"  theta_o_refined = (1-s)*theta_o + s*(sigmoid(snn_gate_logits)*theta_o)\n"
                     f"  use_snn_sigmoid_ann_gate={self.use_snn_sigmoid_ann_gate}\n"
                     f"  snn_sigmoid_ann_warmup_steps={self.snn_sigmoid_ann_warmup_steps}\n"
@@ -1185,6 +1185,9 @@ class ClipClap_model(nn.Module):
         )
         lines.append(
             f"[SNN-SIGMOID-ANN] z_fused shape={tuple(z_fused.shape)} dtype={z_fused.dtype} requires_grad={_rg(z_fused)}"
+        )
+        lines.append(
+            "[SNN-SIGMOID-ANN] z_snn is diagnostic only in snn_sigmoid_ann pure-refine mode."
         )
         print("\n".join(lines), flush=True)
 
@@ -1482,7 +1485,7 @@ class ClipClap_model(nn.Module):
                 self._refine_theta_o_snn_sigmoid_ann(theta_o_ann, snn_gate_logits)
             )
             teacher_theta_o_refined = theta_o_refined
-            teacher_z_fused = theta_o_refined + gamma_eff * z_snn
+            teacher_z_fused = theta_o_refined
             teacher_z_snn = z_snn
             teacher_theta_scaled = None
             self._debug_print_snn_sigmoid_ann_once(
