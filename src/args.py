@@ -326,6 +326,20 @@ def args_main(*args, **kwargs):
         default=True,
     )
     parser.add_argument(
+        "--teacher_snn_sigmoid_ann_snn_ce",
+        help="snn_sigmoid_ann: add auxiliary CE on teacher_z_snn (SNN-only sanity check).",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
+        "--teacher_snn_sigmoid_ann_snn_ce_weight",
+        help="Weight on auxiliary SNN CE when teacher_snn_sigmoid_ann_snn_ce is enabled.",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
         "--teacher_ann_gate_snn",
         help="If true, pass theta_o into TeacherSNNFusionBranch to gate SNN currents and effective leak.",
         type=str_to_bool,

@@ -966,6 +966,12 @@ class ClipClap_model(nn.Module):
         self.snn_sigmoid_ann_detach_gate = bool(
             params_model.get("snn_sigmoid_ann_detach_gate", True)
         )
+        self.teacher_snn_sigmoid_ann_snn_ce = bool(
+            params_model.get("teacher_snn_sigmoid_ann_snn_ce", False)
+        )
+        self.teacher_snn_sigmoid_ann_snn_ce_weight = float(
+            params_model.get("teacher_snn_sigmoid_ann_snn_ce_weight", 1.0)
+        )
         self._teacher_gate_active = (
             self.use_teacher_parallel_snn
             and self.teacher_use_snn_gate
@@ -1182,6 +1188,8 @@ class ClipClap_model(nn.Module):
                     f"  snn_sigmoid_ann_ramp_steps={self.snn_sigmoid_ann_ramp_steps}\n"
                     f"  snn_sigmoid_ann_lambda={self.snn_sigmoid_ann_lambda}\n"
                     f"  snn_sigmoid_ann_detach_gate={self.snn_sigmoid_ann_detach_gate}\n"
+                    f"  teacher_snn_sigmoid_ann_snn_ce={self.teacher_snn_sigmoid_ann_snn_ce}\n"
+                    f"  teacher_snn_sigmoid_ann_snn_ce_weight={self.teacher_snn_sigmoid_ann_snn_ce_weight}\n"
                     f"  teacher_ann_gate_snn={self.teacher_ann_gate_snn}\n"
                     f"  teacher_freeze_ann={self.teacher_freeze_ann}\n"
                     f"  teacher_snn_gamma={self.teacher_snn_gamma}",
@@ -2027,8 +2035,20 @@ class ClipClap_model(nn.Module):
                 l_ann_teacher = Cross_loss(_teacher_ce_logits(theta_o), gt_cross_entropy)
                 l_fused_teacher = Cross_loss(_teacher_ce_logits(teacher_z_fused), gt_cross_entropy)
                 if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
-                    l_snn_teacher = torch.tensor(0.0, device=device)
-                    l_ce = l_fused_teacher + self.teacher_snn_beta * l_ann_teacher
+                    if (
+                        self.teacher_snn_sigmoid_ann_snn_ce
+                        and teacher_z_snn is not None
+                    ):
+                        l_snn_teacher = Cross_loss(
+                            _teacher_ce_logits(teacher_z_snn), gt_cross_entropy
+                        )
+                    else:
+                        l_snn_teacher = torch.tensor(0.0, device=device)
+                    l_ce = (
+                        l_fused_teacher
+                        + self.teacher_snn_beta * l_ann_teacher
+                        + self.teacher_snn_sigmoid_ann_snn_ce_weight * l_snn_teacher
+                    )
                 else:
                     l_snn_teacher = Cross_loss(
                         _teacher_ce_logits(teacher_z_snn), gt_cross_entropy
@@ -2223,6 +2243,20 @@ class ClipClap_model(nn.Module):
                 loss_dict["Loss/loss_teacher_snn"] = l_snn_teacher.detach().cpu()
                 loss_dict["Diag/teacher_gate_ce_used"] = torch.tensor(0.0)
                 loss_dict["Diag/teacher_snn_alpha"] = torch.tensor(float(self.teacher_snn_alpha))
+            if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
+                loss_dict["Loss/teacher_snn_ce"] = l_snn_teacher.detach().cpu()
+                loss_dict["Diag/teacher_snn_ce"] = l_snn_teacher.detach().cpu()
+                loss_dict["Diag/teacher_snn_ce_enabled"] = torch.tensor(
+                    1.0 if self.teacher_snn_sigmoid_ann_snn_ce else 0.0
+                )
+                loss_dict["Diag/teacher_snn_ce_weight"] = torch.tensor(
+                    float(self.teacher_snn_sigmoid_ann_snn_ce_weight)
+                )
+                src = outputs.get("teacher_snn_input_source")
+                if src is not None:
+                    loss_dict["Diag/teacher_snn_input_source_id"] = torch.tensor(
+                        1.0 if str(src) == "temporal_video" else 0.0
+                    )
         if outputs.get("teacher_gate_active"):
             if outputs.get("teacher_gate_mean") is not None:
                 loss_dict["Diag/gate_mean"] = outputs["teacher_gate_mean"].detach().cpu()
@@ -2419,7 +2453,6 @@ class ClipClap_model(nn.Module):
                 if r == "ann":
                     eval_z = theta_o
                 elif r == "snn":
-                    # Diagnostic only (e.g. f_refined - theta_o), not a classification head.
                     eval_z = teacher_z_snn if teacher_z_snn is not None else theta_o
                 elif r == "fused":
                     eval_z = teacher_z_fused
