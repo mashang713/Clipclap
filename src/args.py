@@ -340,6 +340,14 @@ def args_main(*args, **kwargs):
         default=1.0,
     )
     parser.add_argument(
+        "--teacher_snn_only",
+        help="Train/eval with CE on teacher_z_snn only (no fused/ANN teacher CE). Use teacher_eval_repr=snn.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
         "--teacher_ann_gate_snn",
         help="If true, pass theta_o into TeacherSNNFusionBranch to gate SNN currents and effective leak.",
         type=str_to_bool,

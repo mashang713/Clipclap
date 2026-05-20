@@ -330,6 +330,7 @@ def main(args):
         getattr(args, "snn_sigmoid_ann_detach_gate", True),
         getattr(args, "teacher_snn_sigmoid_ann_snn_ce", False),
         getattr(args, "teacher_snn_sigmoid_ann_snn_ce_weight", 1.0),
+        getattr(args, "teacher_snn_only", False),
         str(getattr(args, "feature_extraction_method", "") or ""),
     )
     if args.new_model_sequence==True:

@@ -109,6 +109,7 @@ def get_model_params(
     snn_sigmoid_ann_detach_gate=True,
     teacher_snn_sigmoid_ann_snn_ce=False,
     teacher_snn_sigmoid_ann_snn_ce_weight=1.0,
+    teacher_snn_only=False,
     feature_extraction_method="",
     ):
 
@@ -228,5 +229,6 @@ def get_model_params(
     params_model["teacher_snn_sigmoid_ann_snn_ce_weight"] = float(
         teacher_snn_sigmoid_ann_snn_ce_weight
     )
+    params_model["teacher_snn_only"] = bool(teacher_snn_only)
     params_model["feature_extraction_method"] = str(feature_extraction_method or "")
     return params_model

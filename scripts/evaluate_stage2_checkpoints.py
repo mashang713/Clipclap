@@ -221,6 +221,7 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "snn_sigmoid_ann_detach_gate", True),
         getattr(cfg, "teacher_snn_sigmoid_ann_snn_ce", False),
         getattr(cfg, "teacher_snn_sigmoid_ann_snn_ce_weight", 1.0),
+        getattr(cfg, "teacher_snn_only", False),
         str(getattr(cfg, "feature_extraction_method", "") or ""),
     )
 

@@ -972,6 +972,15 @@ class ClipClap_model(nn.Module):
         self.teacher_snn_sigmoid_ann_snn_ce_weight = float(
             params_model.get("teacher_snn_sigmoid_ann_snn_ce_weight", 1.0)
         )
+        self.teacher_snn_only = bool(params_model.get("teacher_snn_only", False))
+        if self.teacher_snn_only and not self.use_teacher_parallel_snn:
+            raise ValueError("teacher_snn_only=True requires use_teacher_parallel_snn=True")
+        if self.teacher_snn_only and self.teacher_eval_repr != "snn":
+            print(
+                f"  warning: teacher_snn_only=True but teacher_eval_repr={self.teacher_eval_repr!r}; "
+                "use teacher_eval_repr=snn for SNN-only eval",
+                flush=True,
+            )
         self._teacher_gate_active = (
             self.use_teacher_parallel_snn
             and self.teacher_use_snn_gate
@@ -1190,6 +1199,7 @@ class ClipClap_model(nn.Module):
                     f"  snn_sigmoid_ann_detach_gate={self.snn_sigmoid_ann_detach_gate}\n"
                     f"  teacher_snn_sigmoid_ann_snn_ce={self.teacher_snn_sigmoid_ann_snn_ce}\n"
                     f"  teacher_snn_sigmoid_ann_snn_ce_weight={self.teacher_snn_sigmoid_ann_snn_ce_weight}\n"
+                    f"  teacher_snn_only={self.teacher_snn_only}\n"
                     f"  teacher_ann_gate_snn={self.teacher_ann_gate_snn}\n"
                     f"  teacher_freeze_ann={self.teacher_freeze_ann}\n"
                     f"  teacher_snn_gamma={self.teacher_snn_gamma}",
@@ -1232,6 +1242,7 @@ class ClipClap_model(nn.Module):
         self._forward_shape_debug_av_printed = False
         self._forward_shape_debug_printed = False
         self._snn_sigmoid_ann_debug_printed = False
+        self._teacher_snn_only_pred_debug_printed = False
         self.register_buffer(
             "_snn_sigmoid_ann_step",
             torch.zeros((), dtype=torch.long),
@@ -1303,6 +1314,33 @@ class ClipClap_model(nn.Module):
             "[SNN-SIGMOID-ANN] z_snn is diagnostic only in snn_sigmoid_ann pure-refine mode."
         )
         print("\n".join(lines), flush=True)
+
+    def _teacher_snn_only_pred_diag(
+        self, teacher_z_snn, embedding_cross_entropy, gt_cross_entropy
+    ):
+        """Batch diagnostics for SNN-only CE (prototypes = seen train classes in stage-1 CE)."""
+        logits = torch.matmul(teacher_z_snn, embedding_cross_entropy.t())
+        pred = logits.argmax(dim=1)
+        n = pred.numel()
+        n_match_gt = (pred == gt_cross_entropy).sum().float()
+        n_unique = float(pred.unique().numel())
+        diag = {
+            "Diag/teacher_snn_batch_acc": (n_match_gt / max(n, 1)).detach().cpu(),
+            "Diag/teacher_snn_pred_unique": torch.tensor(n_unique),
+            "Diag/teacher_snn_logits_std": logits.std(unbiased=False).detach().cpu(),
+        }
+        if self.debug_print_shapes and not self._teacher_snn_only_pred_debug_printed:
+            self._teacher_snn_only_pred_debug_printed = True
+            pred_cpu = pred.detach().cpu()
+            print(
+                "[SNN-ONLY] one-time pred diag (CE prototype space = seen train classes):\n"
+                f"  batch size={n}, unique predicted class ids={int(n_unique)}\n"
+                f"  pred min/max={int(pred_cpu.min())}/{int(pred_cpu.max())}\n"
+                f"  batch acc vs gt (seen CE labels)={float(n_match_gt / max(n, 1)):.4f}\n"
+                f"  logits mean/std={float(logits.mean()):.4f}/{float(logits.std()):.4f}",
+                flush=True,
+            )
+        return diag
 
     def optimize_scheduler(self, value):
         if self.lr_scheduler:
@@ -1954,6 +1992,7 @@ class ClipClap_model(nn.Module):
         l_fused_teacher = torch.tensor(0.0, device=device)
         teacher_parallel_ce_used = False
         teacher_gate_ce_used = False
+        teacher_snn_only_ce_used = False
 
         theta_det = theta_o.detach()
         # theta_o distribution diagnostics (always log; fused embedding stats). Must be based on detached theta_o.
@@ -2004,8 +2043,15 @@ class ClipClap_model(nn.Module):
                 and teacher_z_fused is not None
                 and embedding_cross_entropy is not None
             )
+            use_teacher_snn_only_ce = (
+                self.teacher_snn_only
+                and self.use_teacher_parallel_snn
+                and teacher_z_snn is not None
+                and embedding_cross_entropy is not None
+            )
             use_teacher_parallel_ce = (
-                self.use_teacher_parallel_snn
+                not self.teacher_snn_only
+                and self.use_teacher_parallel_snn
                 and outputs.get("teacher_parallel_enabled")
                 and not outputs.get("teacher_gate_active")
                 and teacher_z_snn is not None
@@ -2014,6 +2060,21 @@ class ClipClap_model(nn.Module):
             )
             if embedding_cross_entropy is None:
                 l_ce = torch.tensor(0., device=device)
+            elif use_teacher_snn_only_ce:
+                if teacher_z_snn is None:
+                    raise RuntimeError("teacher_snn_only=True but teacher_z_snn is None")
+                teacher_snn_only_ce_used = True
+                teacher_parallel_ce_used = True
+
+                def _teacher_ce_logits(z):
+                    return torch.matmul(z, embedding_cross_entropy.t())
+
+                l_snn_teacher = Cross_loss(
+                    _teacher_ce_logits(teacher_z_snn), gt_cross_entropy
+                )
+                l_fused_teacher = torch.tensor(0.0, device=device)
+                l_ann_teacher = torch.tensor(0.0, device=device)
+                l_ce = l_snn_teacher
             elif use_teacher_gate_ce:
                 teacher_gate_ce_used = True
                 teacher_parallel_ce_used = True
@@ -2230,10 +2291,27 @@ class ClipClap_model(nn.Module):
             "Diag/snn_zero_ratio": snn_zero_ratio.detach().cpu(),
 
         }
+        if teacher_snn_only_ce_used:
+            loss_dict.update(
+                self._teacher_snn_only_pred_diag(
+                    teacher_z_snn, embedding_cross_entropy, gt_cross_entropy
+                )
+            )
+            loss_dict["Loss/teacher_snn_only_ce"] = l_snn_teacher.detach().cpu()
+            loss_dict["Loss/loss_teacher_snn"] = l_snn_teacher.detach().cpu()
+            loss_dict["Loss/loss_teacher_ce"] = l_ce.detach().cpu()
+            loss_dict["Diag/teacher_snn_only"] = torch.tensor(1.0)
+            src = outputs.get("teacher_snn_input_source")
+            if src is not None:
+                loss_dict["Diag/teacher_snn_input_source_id"] = torch.tensor(
+                    1.0 if str(src) == "temporal_video" else 0.0
+                )
         if teacher_parallel_ce_used:
             loss_dict["Loss/loss_teacher_ann"] = l_ann_teacher.detach().cpu()
             loss_dict["Loss/loss_teacher_fused"] = l_fused_teacher.detach().cpu()
             loss_dict["Loss/loss_teacher_ce"] = l_ce.detach().cpu()
+            if not teacher_snn_only_ce_used:
+                loss_dict["Diag/teacher_snn_only"] = torch.tensor(0.0)
             loss_dict["Diag/teacher_snn_gamma"] = torch.tensor(float(self.teacher_snn_gamma))
             loss_dict["Diag/teacher_snn_beta"] = torch.tensor(float(self.teacher_snn_beta))
             if teacher_gate_ce_used:
@@ -2448,7 +2526,9 @@ class ClipClap_model(nn.Module):
             )
             teacher_z_snn = t_out["teacher_z_snn"]
             teacher_z_fused = t_out["teacher_z_fused"]
-            if teacher_z_fused is not None:
+            if self.teacher_snn_only:
+                eval_z = teacher_z_snn if teacher_z_snn is not None else theta_o
+            elif teacher_z_fused is not None:
                 r = self.teacher_eval_repr
                 if r == "ann":
                     eval_z = theta_o
