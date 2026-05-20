@@ -418,6 +418,85 @@ class TeacherSNNFusionBranch(nn.Module):
         return self.block(x, ann_context=ann_context)
 
 
+class TeacherTemporalVideoSNNBranch(nn.Module):
+    """
+    Temporal video SNN for snn_sigmoid_ann: [B, T, 512] -> z_snn [B, out_dim], snn_gate_logits [B, out_dim].
+    Steps over T (no flatten); gate logits from accumulated spike_rate (no ANN gate).
+    """
+
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        output_size,
+        num_steps,
+        beta,
+        threshold,
+        dropout,
+    ):
+        super().__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.dropout = nn.Dropout(dropout)
+        self.num_steps = int(num_steps)
+        self.beta = float(beta)
+        self.threshold = float(threshold)
+        self.snn_int_proj = nn.Linear(output_size, output_size)
+
+    def forward(self, video_seq):
+        if video_seq.dim() != 3:
+            raise ValueError(
+                f"TeacherTemporalVideoSNNBranch expects [B,T,D], got {tuple(video_seq.shape)}"
+            )
+        b, t_len, d_in = video_seq.shape
+        if d_in != self.fc1.in_features:
+            raise ValueError(
+                f"TeacherTemporalVideoSNNBranch input dim {d_in}, expected {self.fc1.in_features}"
+            )
+        device, dtype = video_seq.device, video_seq.dtype
+        h_dim = self.fc1.out_features
+        out_dim = self.fc2.out_features
+
+        mem1 = torch.zeros(b, h_dim, device=device, dtype=dtype)
+        mem2 = torch.zeros(b, out_dim, device=device, dtype=dtype)
+        spike_count = torch.zeros(b, out_dim, device=device, dtype=dtype)
+        mem2_acc = torch.zeros(b, out_dim, device=device, dtype=dtype)
+
+        beta_s = torch.tensor(self.beta, device=device, dtype=dtype)
+        thr = torch.tensor(self.threshold, device=device, dtype=dtype)
+        n_updates = 0.0
+
+        for t in range(t_len):
+            x_t = video_seq[:, t, :]
+            for _ in range(self.num_steps):
+                h_cur = self.fc1(x_t)
+                mem1 = beta_s * mem1 + h_cur
+                spk1 = _SpikeSurrogate.apply(mem1 - thr)
+                mem1 = mem1 * (1.0 - spk1.detach())
+
+                out_cur = self.fc2(self.dropout(spk1))
+                mem2 = beta_s * mem2 + out_cur
+                spk2 = _SpikeSurrogate.apply(mem2 - thr)
+                mem2 = mem2 * (1.0 - spk2.detach())
+
+                spike_count = spike_count + spk2
+                mem2_acc = mem2_acc + mem2
+                n_updates += 1.0
+
+        n = max(n_updates, 1.0)
+        spike_rate = spike_count / n
+        z_snn = mem2_acc / n
+        snn_gate_logits = self.snn_int_proj(spike_rate)
+        aux = {
+            "spike_count": spike_count,
+            "spike_rate": spike_rate,
+            "spike_scale": torch.sigmoid(spike_rate),
+            "gate_mean": torch.tensor(0.0, device=device, dtype=dtype),
+            "fire_rate_mean": spike_rate.mean(),
+        }
+        return z_snn, snn_gate_logits, aux
+
+
 class TeacherSNNSigmoidAnnBranch(nn.Module):
     """
     SNN-only path: pooled AV input -> z_snn [B, out_dim] and snn_gate_logits [B, out_dim].
@@ -898,6 +977,7 @@ class ClipClap_model(nn.Module):
         self.teacher_video_snn_front = None
         self.teacher_video_temporal_snn = None
         self.teacher_spike_evidence_snn = None
+        self.teacher_snn_fusion_uses_temporal_video = False
         if self.use_teacher_parallel_snn:
             out_dim = int(self.dim_out)
             hid = int(params_model.get("teacher_snn_hidden_dim", 512))
@@ -991,15 +1071,28 @@ class ClipClap_model(nn.Module):
                     self.teacher_snn_input_size = int(fusion_in)
 
                 if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
-                    self.teacher_snn_fusion = TeacherSNNSigmoidAnnBranch(
-                        input_size=self.teacher_snn_input_size,
-                        hidden_size=hid,
-                        output_size=out_dim,
-                        num_steps=snn_steps,
-                        beta=snn_beta,
-                        threshold=snn_thr,
-                        dropout=snn_drop,
-                    )
+                    if self.use_temporal_video_features:
+                        self.teacher_snn_fusion_uses_temporal_video = True
+                        self.teacher_snn_input_size = 512
+                        self.teacher_snn_fusion = TeacherTemporalVideoSNNBranch(
+                            input_size=512,
+                            hidden_size=hid,
+                            output_size=out_dim,
+                            num_steps=snn_steps,
+                            beta=snn_beta,
+                            threshold=snn_thr,
+                            dropout=snn_drop,
+                        )
+                    else:
+                        self.teacher_snn_fusion = TeacherSNNSigmoidAnnBranch(
+                            input_size=self.teacher_snn_input_size,
+                            hidden_size=hid,
+                            output_size=out_dim,
+                            num_steps=snn_steps,
+                            beta=snn_beta,
+                            threshold=snn_thr,
+                            dropout=snn_drop,
+                        )
                 else:
                     self.teacher_snn_fusion = TeacherSNNFusionBranch(
                         input_size=self.teacher_snn_input_size,
@@ -1068,6 +1161,18 @@ class ClipClap_model(nn.Module):
                     flush=True,
                 )
             if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
+                if self.teacher_snn_fusion_uses_temporal_video:
+                    print(
+                        "  teacher_snn_fusion=TeacherTemporalVideoSNNBranch "
+                        "in_features=512 (video_seq [B,T,512])",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"  teacher_snn_fusion=TeacherSNNSigmoidAnnBranch "
+                        f"in_features={self.teacher_snn_input_size} (pooled AV)",
+                        flush=True,
+                    )
                 print(
                     f"  teacher_snn_fusion_mode=snn_sigmoid_ann\n"
                     f"  fusion: z_fused = theta_o_refined (z_snn diagnostic only)\n"
@@ -1416,6 +1521,8 @@ class ClipClap_model(nn.Module):
             "teacher_theta_o_refined": None,
             "teacher_snn_gate_strength": None,
             "teacher_snn_gate_logits": None,
+            "teacher_snn_input_source": None,
+            "teacher_video_snn_input": None,
         }
         if self._teacher_gate_active:
             return self._teacher_gate_forward(
@@ -1461,11 +1568,17 @@ class ClipClap_model(nn.Module):
         else:
             model_input_snn = model_input_ann
 
-        assert model_input_snn.shape[1] == self.teacher_snn_input_size, (
-            f"Teacher SNN backend input dim mismatch: "
-            f"model_input_snn has {model_input_snn.shape[1]}, "
-            f"backend expects {self.teacher_snn_input_size}"
+        use_temporal_snn_sigmoid = (
+            self.teacher_snn_fusion_mode == "snn_sigmoid_ann"
+            and v_seq is not None
+            and self.teacher_snn_fusion_uses_temporal_video
         )
+        if not use_temporal_snn_sigmoid:
+            assert model_input_snn.shape[1] == self.teacher_snn_input_size, (
+                f"Teacher SNN backend input dim mismatch: "
+                f"model_input_snn has {model_input_snn.shape[1]}, "
+                f"backend expects {self.teacher_snn_input_size}"
+            )
         gamma_eff = self._teacher_gamma_effective(epoch)
         teacher_fusion_mode = self.teacher_snn_fusion_mode
         teacher_gate = None
@@ -1474,8 +1587,18 @@ class ClipClap_model(nn.Module):
         teacher_theta_o_refined = None
         teacher_snn_gate_strength = None
         teacher_snn_gate_logits = None
+        teacher_snn_input_source = None
+        teacher_video_snn_input = None
         if self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
-            z_snn, snn_int, teacher_aux = self.teacher_snn_fusion(model_input_snn)
+            if use_temporal_snn_sigmoid:
+                teacher_snn_input_source = "temporal_video"
+                teacher_video_snn_input = v_seq
+                snn_fusion_in = v_seq
+            else:
+                teacher_snn_input_source = "pooled_av"
+                snn_fusion_in = model_input_snn
+            model_input_snn = snn_fusion_in
+            z_snn, snn_int, teacher_aux = self.teacher_snn_fusion(snn_fusion_in)
             snn_gate_logits = snn_int
             teacher_snn_int = snn_int
             teacher_snn_gate_logits = snn_gate_logits
@@ -1534,6 +1657,8 @@ class ClipClap_model(nn.Module):
                 "teacher_theta_o_refined": teacher_theta_o_refined,
                 "teacher_snn_gate_strength": teacher_snn_gate_strength,
                 "teacher_snn_gate_logits": teacher_snn_gate_logits,
+                "teacher_snn_input_source": teacher_snn_input_source,
+                "teacher_video_snn_input": teacher_video_snn_input,
                 "teacher_gamma_eff": gamma_eff,
                 "teacher_audio_snn_front": teacher_audio_snn_front,
                 "teacher_video_snn_front": teacher_video_snn_front,
@@ -1606,6 +1731,14 @@ class ClipClap_model(nn.Module):
                 av_lines.append(f"  teacher video SNN input shape: {tuple(v_seq.shape)}")
             else:
                 av_lines.append("  teacher video SNN input: None (no temporal sequence)")
+            if (
+                self.use_teacher_parallel_snn
+                and self.teacher_snn_fusion_mode == "snn_sigmoid_ann"
+                and self.teacher_snn_fusion_uses_temporal_video
+            ):
+                av_lines.append(
+                    "  teacher_snn_fusion (init): TeacherTemporalVideoSNNBranch in=512"
+                )
             print("\n".join(av_lines), flush=True)
 
         if self.modality == 'audio':
@@ -1663,6 +1796,8 @@ class ClipClap_model(nn.Module):
         teacher_video_front_spike_rate = t_out["teacher_video_front_spike_rate"]
         teacher_video_front_spike_scale = t_out["teacher_video_front_spike_scale"]
         teacher_video_front_fire_rate_mean = t_out["teacher_video_front_fire_rate_mean"]
+        teacher_snn_input_source = t_out.get("teacher_snn_input_source")
+        teacher_video_snn_input = t_out.get("teacher_video_snn_input")
 
         if self.debug_print_shapes and not self._forward_shape_debug_printed:
             self._forward_shape_debug_printed = True
@@ -1679,6 +1814,12 @@ class ClipClap_model(nn.Module):
                 )
                 _shape_desc("teacher_model_input_ann", teacher_model_input_ann, post_lines)
                 _shape_desc("teacher_theta_ann", teacher_theta_ann, post_lines)
+                if teacher_snn_input_source is not None:
+                    post_lines.append(
+                        f"  teacher_snn_input_source: {teacher_snn_input_source}"
+                    )
+                if teacher_video_snn_input is not None:
+                    _shape_desc("teacher_video_snn_input", teacher_video_snn_input, post_lines)
                 if self.teacher_snn_arch in ("full_snn_route", "temporal_video"):
                     _shape_desc("teacher_audio_snn_front", teacher_audio_snn_front, post_lines)
                     _shape_desc("teacher_video_snn_front", teacher_video_snn_front, post_lines)
@@ -1687,11 +1828,16 @@ class ClipClap_model(nn.Module):
                     _shape_desc("teacher_video_front_spike_rate", teacher_video_front_spike_rate, post_lines)
                 else:
                     _shape_desc("teacher_model_input_snn", teacher_model_input_snn, post_lines)
-                _shape_desc(
-                    "teacher_z_snn (SNN backend on pooled AV latent)",
-                    teacher_z_snn,
-                    post_lines,
-                )
+                if (
+                    self.teacher_snn_fusion_mode == "snn_sigmoid_ann"
+                    and teacher_snn_input_source == "temporal_video"
+                ):
+                    z_snn_tag = "teacher_z_snn (temporal video SNN branch, diagnostic)"
+                elif self.teacher_snn_fusion_mode == "snn_sigmoid_ann":
+                    z_snn_tag = "teacher_z_snn (pooled AV SNN branch, diagnostic)"
+                else:
+                    z_snn_tag = "teacher_z_snn (SNN backend on pooled AV latent)"
+                _shape_desc(z_snn_tag, teacher_z_snn, post_lines)
                 _shape_desc("teacher_z_fused", teacher_z_fused, post_lines)
                 if teacher_theta_scaled is not None:
                     _shape_desc("teacher_theta_scaled", teacher_theta_scaled, post_lines)
@@ -1746,6 +1892,8 @@ class ClipClap_model(nn.Module):
             "teacher_refine_l2_rel": t_out.get("teacher_refine_l2_rel"),
             "teacher_gamma_eff": t_out.get("teacher_gamma_eff"),
             "teacher_snn_int": t_out.get("teacher_snn_int"),
+            "teacher_snn_input_source": t_out.get("teacher_snn_input_source"),
+            "teacher_video_snn_input": t_out.get("teacher_video_snn_input"),
             "teacher_theta_o_ann": t_out.get("teacher_theta_o_ann"),
             "teacher_theta_o_refined": t_out.get("teacher_theta_o_refined"),
             "teacher_snn_gate_strength": t_out.get("teacher_snn_gate_strength"),
