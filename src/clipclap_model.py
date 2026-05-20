@@ -1543,6 +1543,8 @@ class ClipClap_model(nn.Module):
         self._snn_sigmoid_ann_debug_printed = False
         self._teacher_snn_only_pred_debug_printed = False
         self._snn_only_legacy_loss_warned = False
+        self._snn_diag_train_epoch = -1
+        self._snn_diag_valid_logged = False
         self.register_buffer(
             "_snn_sigmoid_ann_step",
             torch.zeros((), dtype=torch.long),
@@ -2376,6 +2378,94 @@ class ClipClap_model(nn.Module):
         wn = F.normalize(theta_w, dim=1)
         return (1.0 - (zn * wn).sum(dim=1)).mean()
 
+    def _log_snn_ce_classification_diag(
+        self,
+        stage,
+        logits,
+        targets,
+        prototype_count,
+        ce_space="full_class_prototypes",
+        prototype_class_ids=None,
+        epoch=None,
+        targets_are_ce_row_indices=False,
+    ):
+        """Log whether SNN CE uses full-class prototypes vs batch-only contrast."""
+        if logits is None or targets is None:
+            return
+        stage = str(stage).upper()
+        if stage == "TRAIN":
+            ep = -1 if epoch is None else int(epoch)
+            if self._snn_diag_train_epoch == ep:
+                return
+            self._snn_diag_train_epoch = ep
+        elif stage == "VALID":
+            if self._snn_diag_valid_logged:
+                return
+            self._snn_diag_valid_logged = True
+
+        with torch.no_grad():
+            pred = logits.argmax(dim=1)
+            tgt = targets.detach().reshape(-1).long()
+            pred_cpu = pred.detach().cpu()
+            tgt_cpu = tgt.detach().cpu()
+            n_proto = int(prototype_count)
+            n_logits_cols = int(logits.shape[1])
+            is_full_class = (
+                ce_space == "full_class_prototypes"
+                and n_logits_cols == n_proto
+                and n_proto > 1
+            )
+            ce_kind = (
+                "full_class_CE (all seen-train prototypes)"
+                if is_full_class
+                else (
+                    "batch_contrastive_or_partial_CE"
+                    if n_logits_cols <= int(logits.shape[0])
+                    else "unknown_CE_space"
+                )
+            )
+            pred_unique = int(pred_cpu.unique().numel())
+            tgt_note = (
+                "remapped CE row indices 0..K-1 (train.py mapping_dict)"
+                if targets_are_ce_row_indices
+                else "raw dataset class ids (eval)"
+            )
+            lines = [
+                f"[SNN-DIAG][{stage}] ce_space={ce_kind}",
+                f"[SNN-DIAG][{stage}] target_label_space={tgt_note}",
+                f"[SNN-DIAG][{stage}] logits shape={tuple(logits.shape)} "
+                f"(batch={logits.shape[0]}, num_classes_in_logits={n_logits_cols})",
+                f"[SNN-DIAG][{stage}] prototype_count={n_proto} "
+                f"(embedding_cross_entropy / eval emb_cls rows)",
+                f"[SNN-DIAG][{stage}] pred_unique_class_count={pred_unique}",
+                f"[SNN-DIAG][{stage}] target min/max="
+                f"{int(tgt_cpu.min())}/{int(tgt_cpu.max())}",
+                f"[SNN-DIAG][{stage}] predicted id min/max="
+                f"{int(pred_cpu.min())}/{int(pred_cpu.max())}",
+                f"[SNN-DIAG][{stage}] first 10 target ids="
+                f"{tgt_cpu[:10].tolist()}",
+                f"[SNN-DIAG][{stage}] first 10 pred ids="
+                f"{pred_cpu[:10].tolist()}",
+            ]
+            if prototype_class_ids is not None and len(prototype_class_ids) > 0:
+                pc = prototype_class_ids[: min(10, len(prototype_class_ids))]
+                lines.append(
+                    f"[SNN-DIAG][{stage}] first 10 prototype class ids (row order)={pc}"
+                )
+            if (
+                prototype_class_ids is not None
+                and len(prototype_class_ids) == n_logits_cols
+                and pred_cpu.numel() > 0
+            ):
+                mapped_pred_cls = [
+                    int(prototype_class_ids[int(i)]) for i in pred_cpu[:10]
+                ]
+                lines.append(
+                    f"[SNN-DIAG][{stage}] first 10 pred mapped to dataset class ids="
+                    f"{mapped_pred_cls}"
+                )
+            print("\n".join(lines), flush=True)
+
     def compute_loss(self, outputs, embeddings_crossentropy, gt_cross_entropy, epoch=None):
 
         theta_w = outputs['theta_w']
@@ -2565,9 +2655,18 @@ class ClipClap_model(nn.Module):
                 teacher_z_snn, outputs.get("theta_w"), device
             )
             if self.cross_entropy_loss and embedding_cross_entropy is not None:
-                loss_snn_ce = Cross_loss(
-                    torch.matmul(z_snn_for_loss, embedding_cross_entropy.t()),
+                logits_snn_ce = torch.matmul(
+                    z_snn_for_loss, embedding_cross_entropy.t()
+                )
+                loss_snn_ce = Cross_loss(logits_snn_ce, gt_cross_entropy)
+                self._log_snn_ce_classification_diag(
+                    "TRAIN",
+                    logits_snn_ce,
                     gt_cross_entropy,
+                    embedding_cross_entropy.shape[0],
+                    ce_space="full_class_prototypes",
+                    epoch=epoch,
+                    targets_are_ce_row_indices=True,
                 )
                 teacher_snn_only_ce_used = True
                 l_ce = loss_snn_ce
@@ -3027,6 +3126,27 @@ class ClipClap_model(nn.Module):
                     eval_z = theta_o
 
         return eval_z, eval_z, theta_w
+
+    def log_snn_eval_classification_diag(
+        self, sample_embeddings, class_prototypes, targets, prototype_class_ids=None
+    ):
+        """
+        Validation CE-space diagnostic: z_snn (or eval repr) vs W_proj(W_enc(all-class text)).
+        Prototype rows follow sorted(dataset.classes) (same as map_embeddings_target ordering).
+        """
+        if not self._use_clean_snn_only_loss():
+            return
+        if sample_embeddings is None or class_prototypes is None or targets is None:
+            return
+        logits = torch.matmul(sample_embeddings, class_prototypes.t())
+        self._log_snn_ce_classification_diag(
+            "VALID",
+            logits,
+            targets,
+            class_prototypes.shape[0],
+            ce_space="full_class_prototypes",
+            prototype_class_ids=prototype_class_ids,
+        )
 
 
 def build_clipclap_model(model_params, input_size_audio, input_size_video):

@@ -294,7 +294,15 @@ def evaluate_dataset_baseline(dataset_tuple, model, device, distance_fn, best_be
     emb_cls=outputs_all[2]
     outputs_all=(stacked_audio_emb, stacked_video_emb, emb_cls)
 
-
+    if hasattr(model, "log_snn_eval_classification_diag"):
+        model._snn_diag_valid_logged = False
+        proto_class_ids = sorted(dataset.classes.astype(int).tolist())
+        model.log_snn_eval_classification_diag(
+            stacked_video_emb,
+            emb_cls,
+            data_num,
+            prototype_class_ids=proto_class_ids,
+        )
 
     a_p, v_p, t_p = outputs_all
     # a_p = None
