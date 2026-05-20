@@ -485,7 +485,17 @@ def args_main(*args, **kwargs):
     )
     parser.add_argument(
         "--teacher_freeze_ann",
-        help="If true, freeze ANN backbone parameters (requires_grad=False); optimizer only updates trainable (e.g. teacher SNN) parameters.",
+        help="If true, freeze ANN backbone (requires_grad=False). snn_only: O_enc/O_proj/D_o only unless "
+        "teacher_freeze_text_branch=True. Legacy modes: all O_enc/W_enc/O_proj/D_o/W_proj/D_w.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+    )
+    parser.add_argument(
+        "--teacher_freeze_text_branch",
+        help="If true with teacher_freeze_ann, also freeze W_enc/W_proj/D_w. Default False so snn_only keeps "
+        "trainable text prototypes (theta_w) for CE / proto align.",
         type=str_to_bool,
         nargs="?",
         const=True,

@@ -11,7 +11,12 @@ from get_evaluation import get_evaluation
 from src.dataset import ActivityNetDataset, AudioSetZSLDataset, ContrastiveDataset, VGGSoundDataset, UCFDataset
 from src.dataset import DefaultCollator
 from src.metrics import DetailedLosses, MeanClassAccuracy, PercentOverlappingClasses, TargetDifficulty
-from src.clipclap_model import build_clipclap_model, init_snn_clipclap_from_ann_checkpoint, apply_teacher_init_ann_checkpoint
+from src.clipclap_model import (
+    apply_teacher_ann_parameter_freeze,
+    apply_teacher_init_ann_checkpoint,
+    build_clipclap_model,
+    init_snn_clipclap_from_ann_checkpoint,
+)
 from src.sampler import SamplerFactory
 from src.train import train
 from src.loss import L2Loss
@@ -323,6 +328,7 @@ def main(args):
         getattr(args, "teacher_gamma_warmup", True),
         getattr(args, "teacher_init_ann_path", None),
         getattr(args, "teacher_freeze_ann", False),
+        getattr(args, "teacher_freeze_text_branch", False),
         getattr(args, "use_snn_sigmoid_ann_gate", False),
         getattr(args, "snn_sigmoid_ann_warmup_steps", 500),
         getattr(args, "snn_sigmoid_ann_ramp_steps", 1500),
@@ -354,10 +360,26 @@ def main(args):
             args.device,
         )
         logger.info(
-            "Teacher ANN init: path=%s freeze_ann=%s",
+            "Teacher ANN init: path=%s freeze_ann=%s freeze_text_branch=%s",
             args.teacher_init_ann_path,
             getattr(args, "teacher_freeze_ann", False),
+            getattr(args, "teacher_freeze_text_branch", False),
         )
+    elif getattr(args, "teacher_freeze_ann", False) or getattr(
+        args, "teacher_freeze_text_branch", False
+    ):
+        apply_teacher_ann_parameter_freeze(
+            model,
+            freeze_ann=bool(getattr(args, "teacher_freeze_ann", False)),
+            freeze_text_branch=bool(getattr(args, "teacher_freeze_text_branch", False)),
+        )
+        if getattr(args, "teacher_freeze_ann", False) and not getattr(
+            args, "teacher_init_ann_path", None
+        ):
+            logger.warning(
+                "teacher_freeze_ann=True without teacher_init_ann_path: AV ANN uses random init "
+                "then frozen; for snn_only load a stage-1 checkpoint via --teacher_init_ann_path"
+            )
 
     if getattr(args, "model_backend", "ann") == "snn" and getattr(args, "snn_init_ann_path", None):
         init_snn_clipclap_from_ann_checkpoint(

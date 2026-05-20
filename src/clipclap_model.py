@@ -842,7 +842,88 @@ def init_snn_clipclap_from_ann_checkpoint(
 
 
 
-TEACHER_INIT_ANN_PREFIXES = ("O_enc.", "W_enc.", "O_proj.", "D_o.", "W_proj.", "D_w.")
+TEACHER_AV_ANN_PREFIXES = ("O_enc.", "O_proj.", "D_o.")
+TEACHER_TEXT_ANN_PREFIXES = ("W_enc.", "W_proj.", "D_w.")
+TEACHER_INIT_ANN_PREFIXES = TEACHER_AV_ANN_PREFIXES + TEACHER_TEXT_ANN_PREFIXES
+
+
+def ann_freeze_prefixes(freeze_ann: bool, freeze_text_branch: bool, fusion_mode: str):
+    """Which ANN submodule prefixes to freeze. snn_only + freeze_ann keeps text branch trainable by default."""
+    fusion_mode = str(fusion_mode or "").lower()
+    if not freeze_ann and not freeze_text_branch:
+        return ()
+    if fusion_mode == "snn_only":
+        prefixes = []
+        if freeze_ann:
+            prefixes.extend(TEACHER_AV_ANN_PREFIXES)
+        if freeze_text_branch:
+            prefixes.extend(TEACHER_TEXT_ANN_PREFIXES)
+        return tuple(prefixes)
+    if freeze_ann:
+        return TEACHER_INIT_ANN_PREFIXES
+    if freeze_text_branch:
+        return TEACHER_TEXT_ANN_PREFIXES
+    return ()
+
+
+def print_ann_branch_trainable_param_counts(model):
+    """Log trainable parameter counts per ANN branch (for SNN-only / freeze debugging)."""
+    branches = (
+        ("O_enc", "O_enc."),
+        ("O_proj", "O_proj."),
+        ("D_o", "D_o."),
+        ("W_enc", "W_enc."),
+        ("W_proj", "W_proj."),
+        ("D_w", "D_w."),
+    )
+    for label, prefix in branches:
+        n = sum(
+            p.numel() for name, p in model.named_parameters() if name.startswith(prefix) and p.requires_grad
+        )
+        print(f"  {label} trainable params = {n}", flush=True)
+
+
+def apply_teacher_ann_parameter_freeze(model, freeze_ann: bool, freeze_text_branch: bool):
+    """
+    Set requires_grad=False on selected ANN backbone prefixes; rebuild optimizer for trainable only.
+    """
+    fusion_mode = getattr(model, "teacher_snn_fusion_mode", "add")
+    prefixes = ann_freeze_prefixes(freeze_ann, freeze_text_branch, fusion_mode)
+    if not prefixes:
+        print("frozen ANN params: 0 (teacher_freeze_ann=False, teacher_freeze_text_branch=False)", flush=True)
+        print_ann_branch_trainable_param_counts(model)
+        return 0
+
+    frozen = 0
+    for name, p in model.named_parameters():
+        if name.startswith(prefixes):
+            p.requires_grad = False
+            frozen += 1
+    print(
+        f"teacher_ann_freeze: fusion_mode={fusion_mode} freeze_ann={freeze_ann} "
+        f"freeze_text_branch={freeze_text_branch} frozen_tensors={frozen}",
+        flush=True,
+    )
+    if fusion_mode == "snn_only" and freeze_ann and not freeze_text_branch:
+        print(
+            "  snn_only: frozen AV only (O_enc/O_proj/D_o); W_enc/W_proj/D_w remain trainable for theta_w",
+            flush=True,
+        )
+    print_ann_branch_trainable_param_counts(model)
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    teacher_trainable = sum(
+        p.numel()
+        for n, p in model.named_parameters()
+        if p.requires_grad and not n.startswith(TEACHER_INIT_ANN_PREFIXES)
+    )
+    print(
+        f"trainable teacher (non-ANN-backbone) params: {teacher_trainable} "
+        f"(all trainable: {trainable})",
+        flush=True,
+    )
+    model.rebuild_optimizer_trainable_only()
+    return frozen
 
 
 def apply_teacher_init_ann_checkpoint(model, checkpoint_path, freeze_ann: bool, map_location):
@@ -894,23 +975,8 @@ def apply_teacher_init_ann_checkpoint(model, checkpoint_path, freeze_ann: bool, 
     if n_shape:
         print(f"  shape mismatches: {_fmt_keys(skipped_shape, limit=8)}", flush=True)
 
-    if freeze_ann:
-        frozen = 0
-        for name, p in model.named_parameters():
-            if name.startswith(TEACHER_INIT_ANN_PREFIXES):
-                p.requires_grad = False
-                frozen += 1
-        print(f"frozen ANN params: {frozen}", flush=True)
-    else:
-        print("frozen ANN params: 0 (teacher_freeze_ann=False)", flush=True)
-
-    trainable = sum(1 for p in model.parameters() if p.requires_grad)
-    teacher_trainable = sum(
-        1 for n, p in model.named_parameters() if p.requires_grad and not n.startswith(TEACHER_INIT_ANN_PREFIXES)
-    )
-    print(f"trainable teacher params: {teacher_trainable} (all trainable tensors: {trainable})", flush=True)
-
-    model.rebuild_optimizer_trainable_only()
+    freeze_text = bool(getattr(model, "teacher_freeze_text_branch", False))
+    apply_teacher_ann_parameter_freeze(model, freeze_ann=bool(freeze_ann), freeze_text_branch=freeze_text)
 
 
 class ClipClap_model(nn.Module):
@@ -1100,6 +1166,7 @@ class ClipClap_model(nn.Module):
             self.teacher_ann_gate_snn and self.teacher_snn_fusion_mode != "snn_sigmoid_ann"
         )
         self.teacher_freeze_ann = bool(params_model.get("teacher_freeze_ann", False))
+        self.teacher_freeze_text_branch = bool(params_model.get("teacher_freeze_text_branch", False))
         self.teacher_gate_strength = float(params_model.get("teacher_gate_strength", 0.5))
         self.teacher_leak_strength = float(params_model.get("teacher_leak_strength", 0.2))
         self.teacher_spike_scale_strength = float(
@@ -1425,6 +1492,7 @@ class ClipClap_model(nn.Module):
                     f"  teacher_snn_only={self.teacher_snn_only}\n"
                     f"  teacher_ann_gate_snn={self.teacher_ann_gate_snn}\n"
                     f"  teacher_freeze_ann={self.teacher_freeze_ann}\n"
+                    f"  teacher_freeze_text_branch={self.teacher_freeze_text_branch}\n"
                     f"  teacher_snn_gamma={self.teacher_snn_gamma}",
                     flush=True,
                 )

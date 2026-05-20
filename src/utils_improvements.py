@@ -102,6 +102,7 @@ def get_model_params(
     teacher_gamma_warmup=True,
     teacher_init_ann_path=None,
     teacher_freeze_ann=False,
+    teacher_freeze_text_branch=False,
     use_snn_sigmoid_ann_gate=False,
     snn_sigmoid_ann_warmup_steps=500,
     snn_sigmoid_ann_ramp_steps=1500,
@@ -224,6 +225,7 @@ def get_model_params(
     params_model["teacher_gamma_warmup"] = bool(teacher_gamma_warmup)
     params_model["teacher_init_ann_path"] = teacher_init_ann_path
     params_model["teacher_freeze_ann"] = bool(teacher_freeze_ann)
+    params_model["teacher_freeze_text_branch"] = bool(teacher_freeze_text_branch)
     params_model["use_snn_sigmoid_ann_gate"] = bool(use_snn_sigmoid_ann_gate)
     params_model["snn_sigmoid_ann_warmup_steps"] = int(snn_sigmoid_ann_warmup_steps)
     params_model["snn_sigmoid_ann_ramp_steps"] = int(snn_sigmoid_ann_ramp_steps)
