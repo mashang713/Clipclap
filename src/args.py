@@ -327,6 +327,15 @@ def args_main(*args, **kwargs):
         default=True,
     )
     parser.add_argument(
+        "--teacher_snn_sigmoid_ann_use_audio",
+        help="snn_sigmoid_ann with temporal video: if true, multimodal gate uses audio[1024] + "
+        "video[B,T,512]; if false, video-only TeacherTemporalVideoSNNBranch fallback.",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=True,
+    )
+    parser.add_argument(
         "--teacher_snn_sigmoid_ann_snn_ce",
         help="snn_sigmoid_ann: add auxiliary CE on teacher_z_snn (SNN-only sanity check).",
         type=str_to_bool,

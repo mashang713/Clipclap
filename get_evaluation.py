@@ -169,6 +169,7 @@ def get_evaluation(args):
         getattr(config, "snn_sigmoid_ann_ramp_steps", 1500),
         getattr(config, "snn_sigmoid_ann_lambda", 0.3),
         getattr(config, "snn_sigmoid_ann_detach_gate", True),
+        getattr(config, "teacher_snn_sigmoid_ann_use_audio", True),
         getattr(config, "teacher_snn_sigmoid_ann_snn_ce", False),
         getattr(config, "teacher_snn_sigmoid_ann_snn_ce_weight", 1.0),
         getattr(config, "teacher_snn_only", False),

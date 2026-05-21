@@ -220,6 +220,7 @@ def model_params_from_cfg(cfg: Any):
         getattr(cfg, "snn_sigmoid_ann_ramp_steps", 1500),
         getattr(cfg, "snn_sigmoid_ann_lambda", 0.3),
         getattr(cfg, "snn_sigmoid_ann_detach_gate", True),
+        getattr(cfg, "teacher_snn_sigmoid_ann_use_audio", True),
         getattr(cfg, "teacher_snn_sigmoid_ann_snn_ce", False),
         getattr(cfg, "teacher_snn_sigmoid_ann_snn_ce_weight", 1.0),
         getattr(cfg, "teacher_snn_only", False),

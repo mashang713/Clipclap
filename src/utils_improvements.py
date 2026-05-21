@@ -108,6 +108,7 @@ def get_model_params(
     snn_sigmoid_ann_ramp_steps=1500,
     snn_sigmoid_ann_lambda=0.3,
     snn_sigmoid_ann_detach_gate=True,
+    teacher_snn_sigmoid_ann_use_audio=True,
     teacher_snn_sigmoid_ann_snn_ce=False,
     teacher_snn_sigmoid_ann_snn_ce_weight=1.0,
     teacher_snn_only=False,
@@ -231,6 +232,7 @@ def get_model_params(
     params_model["snn_sigmoid_ann_ramp_steps"] = int(snn_sigmoid_ann_ramp_steps)
     params_model["snn_sigmoid_ann_lambda"] = float(snn_sigmoid_ann_lambda)
     params_model["snn_sigmoid_ann_detach_gate"] = bool(snn_sigmoid_ann_detach_gate)
+    params_model["teacher_snn_sigmoid_ann_use_audio"] = bool(teacher_snn_sigmoid_ann_use_audio)
     params_model["teacher_snn_sigmoid_ann_snn_ce"] = bool(teacher_snn_sigmoid_ann_snn_ce)
     params_model["teacher_snn_sigmoid_ann_snn_ce_weight"] = float(
         teacher_snn_sigmoid_ann_snn_ce_weight
